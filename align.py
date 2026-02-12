@@ -26,7 +26,7 @@ import time
 from itertools import permutations
 import numpy as np
 
-def load_vtp_points(vtp_path: str) -> np.ndarray:
+def _read_mesh_as_polydata(mesh_path: str):
     try:
         import pyvista as pv  # type: ignore
     except ImportError as e:
@@ -34,13 +34,67 @@ def load_vtp_points(vtp_path: str) -> np.ndarray:
             "pyvista is required to read mesh files (.vtp/.glb). Install with: pip install pyvista"
         ) from e
 
-    mesh = pv.read(vtp_path)
+    if mesh_path.lower().endswith(".vtp"):
+        # Keep .vtp handling identical to the point-loading path to avoid ordering drift.
+        try:
+            import vtk  # type: ignore
+        except ImportError as e:
+            raise RuntimeError("vtk is required to read .vtp files. Install with: pip install vtk") from e
+        reader = vtk.vtkXMLPolyDataReader()
+        reader.SetFileName(mesh_path)
+        reader.Update()
+        mesh = pv.wrap(reader.GetOutput())
+        return mesh
+
+    mesh = pv.read(mesh_path)
+
+    # Preserve original surface connectivity from each block when possible.
     if isinstance(mesh, pv.MultiBlock):
-        mesh = mesh.combine()
+        polys = []
+        for block in mesh:
+            if block is None:
+                continue
+            if isinstance(block, pv.PolyData):
+                pd = block
+            else:
+                pd = block.extract_surface()
+            if pd is None or pd.n_points == 0:
+                continue
+            polys.append(pd)
+        if not polys:
+            raise RuntimeError(f"No surface geometry found in {mesh_path}")
+        if len(polys) == 1:
+            mesh = polys[0].copy(deep=True)
+        else:
+            mesh = pv.append_polydata(polys)
+    elif not isinstance(mesh, pv.PolyData):
+        mesh = mesh.extract_surface()
 
-    if not hasattr(mesh, "points"):
-        raise RuntimeError(f"Unsupported mesh type for points extraction: {type(mesh)}")
+    # Keep polygons as-is; avoid forced triangulation to prevent topology changes.
+    if not isinstance(mesh, pv.PolyData) or mesh.n_points == 0:
+        raise RuntimeError(f"Unsupported or empty surface mesh from {mesh_path}: {type(mesh)}")
+    return mesh
 
+
+def load_vtp_points(vtp_path: str) -> np.ndarray:
+    # Use direct VTK path for .vtp to preserve exact point ordering/connectivity semantics.
+    if vtp_path.lower().endswith(".vtp"):
+        try:
+            import vtk  # type: ignore
+        except ImportError as e:
+            raise RuntimeError("vtk is required to read .vtp files. Install with: pip install vtk") from e
+
+        reader = vtk.vtkXMLPolyDataReader()
+        reader.SetFileName(vtp_path)
+        reader.Update()
+        poly = reader.GetOutput()
+        n = poly.GetNumberOfPoints()
+        pts = np.empty((n, 3), dtype=np.float64)
+        for i in range(n):
+            pts[i] = poly.GetPoint(i)
+        return pts
+
+    mesh = _read_mesh_as_polydata(vtp_path)
     pts = np.asarray(mesh.points, dtype=np.float64)
     if pts.ndim != 2 or pts.shape[1] != 3:
         raise RuntimeError(f"Unexpected points shape {pts.shape} from {vtp_path}")
@@ -60,30 +114,69 @@ def save_aligned_vtp(
     output_stem: str,
 ) -> str:
     """Save aligned points into a VTP mesh, reusing topology from template when possible."""
+    # Direct VTK copy path for .vtp template preserves connectivity exactly.
+    if template_mesh_path.lower().endswith(".vtp"):
+        try:
+            import vtk  # type: ignore
+            from vtk.util import numpy_support  # type: ignore
+        except ImportError as e:
+            raise RuntimeError("vtk is required to write .vtp files. Install with: pip install vtk") from e
+
+        reader = vtk.vtkXMLPolyDataReader()
+        reader.SetFileName(template_mesh_path)
+        reader.Update()
+        template_poly = reader.GetOutput()
+
+        pts = np.asarray(aligned_points, dtype=np.float64)
+        if pts.ndim != 2 or pts.shape[1] != 3:
+            raise RuntimeError(f"Expected aligned_points shape (N,3), got {pts.shape}")
+        if template_poly.GetNumberOfPoints() != pts.shape[0]:
+            raise RuntimeError(
+                f"Template point count ({template_poly.GetNumberOfPoints()}) does not match "
+                f"aligned points ({pts.shape[0]}). Cannot preserve connectivity."
+            )
+
+        out_poly = vtk.vtkPolyData()
+        out_poly.DeepCopy(template_poly)
+        vtk_pts = vtk.vtkPoints()
+        vtk_pts.SetData(numpy_support.numpy_to_vtk(pts, deep=True))
+        out_poly.SetPoints(vtk_pts)
+
+        normalized = out_dir_or_prefix.rstrip(" .")
+        if not normalized:
+            normalized = "."
+        if normalized.lower().endswith(".vtp"):
+            normalized = normalized[:-4]
+        out_dir = os.path.abspath(normalized)
+        os.makedirs(out_dir, exist_ok=True)
+        final_out = os.path.join(out_dir, f"{output_stem}_aligned.vtp")
+
+        writer = vtk.vtkXMLPolyDataWriter()
+        writer.SetFileName(final_out)
+        writer.SetInputData(out_poly)
+        writer.SetDataModeToBinary()
+        if writer.Write() != 1:
+            raise RuntimeError(f"Failed to write {final_out}")
+        return final_out
+
     try:
         import pyvista as pv  # type: ignore
     except ImportError as e:
         raise RuntimeError("pyvista is required to write .vtp files. Install with: pip install pyvista") from e
 
-    mesh = pv.read(template_mesh_path)
-    if isinstance(mesh, pv.MultiBlock):
-        mesh = mesh.combine()
+    mesh = _read_mesh_as_polydata(template_mesh_path)
 
     pts = np.asarray(aligned_points, dtype=np.float64)
     if pts.ndim != 2 or pts.shape[1] != 3:
         raise RuntimeError(f"Expected aligned_points shape (N,3), got {pts.shape}")
 
-    # Prefer keeping template topology if point count matches.
-    if hasattr(mesh, "points") and np.asarray(mesh.points).shape[0] == pts.shape[0]:
-        if isinstance(mesh, pv.PolyData):
-            out_mesh = mesh.copy(deep=True)
-        else:
-            out_mesh = mesh.extract_surface().triangulate()
-            if np.asarray(out_mesh.points).shape[0] != pts.shape[0]:
-                out_mesh = pv.PolyData(pts)
-        out_mesh.points = pts
-    else:
-        out_mesh = pv.PolyData(pts)
+    if np.asarray(mesh.points).shape[0] != pts.shape[0]:
+        raise RuntimeError(
+            f"Template point count ({np.asarray(mesh.points).shape[0]}) does not match "
+            f"aligned points ({pts.shape[0]}). Cannot preserve connectivity."
+        )
+    out_mesh = mesh.copy(deep=True)
+    out_mesh.points = pts
 
     normalized = out_dir_or_prefix.rstrip(" .")
     if not normalized:
@@ -286,7 +379,8 @@ def fmt_mat(M: np.ndarray) -> str:
     return np.array2string(M, precision=6, suppress_small=False)
 
 def plot_meshes(
-    vtp_path: str,
+    ref_path: str,
+    src_path: str,
     P: np.ndarray,
     Q_mis: np.ndarray,
     trials: list[dict],
@@ -300,13 +394,18 @@ def plot_meshes(
         print("\n[plot] pyvista not installed -> skipping plots. Install with: pip install pyvista\n")
         return
 
-    mesh = pv.read(vtp_path)
-    if isinstance(mesh, pv.MultiBlock):
-        mesh = mesh.combine()
-    if not isinstance(mesh, pv.PolyData):
-        mesh = mesh.extract_surface().triangulate()
+    mesh_ref = _read_mesh_as_polydata(ref_path)
+    mesh_src = _read_mesh_as_polydata(src_path)
     if len(trials) == 0:
         raise RuntimeError("No ICP trials to plot")
+    if mesh_ref.n_points != P.shape[0]:
+        raise RuntimeError(
+            f"Reference mesh points ({mesh_ref.n_points}) != loaded reference points ({P.shape[0]})."
+        )
+    if mesh_src.n_points != Q_mis.shape[0]:
+        raise RuntimeError(
+            f"Source mesh points ({mesh_src.n_points}) != loaded source points ({Q_mis.shape[0]})."
+        )
 
     # First plot: both inputs with PCA/SVD principal vectors.
     # Also show Q's tripod mapped by the best transform so alignment is visible.
@@ -334,10 +433,10 @@ def plot_meshes(
 
     pl0 = pv.Plotter(window_size=(1400, 900), off_screen=save_mode)
     pl0.add_text("Inputs + PCA/SVD vectors (raw + mapped Q)", font_size=14)
-    mesh_orig = mesh.copy(deep=True)
-    mesh_src = mesh.copy(deep=True)
+    mesh_orig = mesh_ref.copy(deep=True)
+    mesh_src_vis = mesh_src.copy(deep=True)
     mesh_orig.points = P
-    mesh_src.points = Q_mis
+    mesh_src_vis.points = Q_mis
     # pl0.add_mesh(mesh_orig, opacity=0.08, color="dodgerblue")
     # pl0.add_mesh(mesh_src, opacity=0.08, color="tomato")
 
@@ -373,8 +472,8 @@ def plot_meshes(
 
     # Row 0: original vs misaligned.
     pl.subplot(0, 0)
-    mesh_orig = mesh.copy(deep=True)
-    mesh_mis = mesh.copy(deep=True)
+    mesh_orig = mesh_ref.copy(deep=True)
+    mesh_mis = mesh_src.copy(deep=True)
     mesh_orig.points = P
     mesh_mis.points = Q_mis
     pl.add_text(f"{label}\nmisaligned cent_err={mis_cent_err:.3g}", font_size=11)
@@ -384,8 +483,8 @@ def plot_meshes(
 
     # Row 1: original vs initialization of best run.
     pl.subplot(1, 0)
-    mesh_orig = mesh.copy(deep=True)
-    mesh_init = mesh.copy(deep=True)
+    mesh_orig = mesh_ref.copy(deep=True)
+    mesh_init = mesh_src.copy(deep=True)
     mesh_orig.points = P
     mesh_init.points = best_tr["Q_init_vis"]
     pl.add_text(f"{label}\ninitial cent_err={init_cent_err:.3g}", font_size=11)
@@ -395,8 +494,8 @@ def plot_meshes(
 
     # Row 2: original vs final aligned of best run.
     pl.subplot(2, 0)
-    mesh_orig = mesh.copy(deep=True)
-    mesh_aln = mesh.copy(deep=True)
+    mesh_orig = mesh_ref.copy(deep=True)
+    mesh_aln = mesh_src.copy(deep=True)
     mesh_orig.points = P
     mesh_aln.points = best_tr["Q_aligned"]
     pl.add_text(
@@ -608,7 +707,8 @@ def main():
         print(f"saved aligned mesh: {saved_path}")
 
     if args.plot or args.save_plots_dir:
-        plot_meshes(args.vtp, P, Q_mis, trials, save_dir=args.save_plots_dir, output_stem=output_stem)
+        source_for_plot = args.vtp2 if args.vtp2 else args.vtp
+        plot_meshes(args.vtp, source_for_plot, P, Q_mis, trials, save_dir=args.save_plots_dir, output_stem=output_stem)
 
 if __name__ == "__main__":
     try:
