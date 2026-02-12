@@ -20,8 +20,10 @@ Notes:
 
 import argparse
 import math
+import os
 import sys
 import time
+from itertools import permutations
 import numpy as np
 
 def load_vtp_points(vtp_path: str) -> np.ndarray:
@@ -43,6 +45,47 @@ def load_vtp_points(vtp_path: str) -> np.ndarray:
     if pts.ndim != 2 or pts.shape[1] != 3:
         raise RuntimeError(f"Unexpected points shape {pts.shape} from {vtp_path}")
     return pts
+
+
+def save_aligned_vtp(template_mesh_path: str, aligned_points: np.ndarray, out_dir_or_prefix: str) -> str:
+    """Save aligned points into a VTP mesh, reusing topology from template when possible."""
+    try:
+        import pyvista as pv  # type: ignore
+    except ImportError as e:
+        raise RuntimeError("pyvista is required to write .vtp files. Install with: pip install pyvista") from e
+
+    mesh = pv.read(template_mesh_path)
+    if isinstance(mesh, pv.MultiBlock):
+        mesh = mesh.combine()
+
+    pts = np.asarray(aligned_points, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        raise RuntimeError(f"Expected aligned_points shape (N,3), got {pts.shape}")
+
+    # Prefer keeping template topology if point count matches.
+    if hasattr(mesh, "points") and np.asarray(mesh.points).shape[0] == pts.shape[0]:
+        if isinstance(mesh, pv.PolyData):
+            out_mesh = mesh.copy(deep=True)
+        else:
+            out_mesh = mesh.extract_surface().triangulate()
+            if np.asarray(out_mesh.points).shape[0] != pts.shape[0]:
+                out_mesh = pv.PolyData(pts)
+        out_mesh.points = pts
+    else:
+        out_mesh = pv.PolyData(pts)
+
+    normalized = out_dir_or_prefix.rstrip(" .")
+    if not normalized:
+        normalized = "."
+    # Treat argument as a directory/prefix and always generate filename + extension.
+    # If user passes something ending in ".vtp", interpret it as a folder-like prefix.
+    if normalized.lower().endswith(".vtp"):
+        normalized = normalized[:-4]
+    out_dir = os.path.abspath(normalized)
+    os.makedirs(out_dir, exist_ok=True)
+    final_out = os.path.join(out_dir, "aligned_best.vtp")
+    out_mesh.save(final_out)
+    return final_out
 
 def random_rotation_matrix(rng: np.random.Generator) -> np.ndarray:
     # Uniform random rotation via random unit quaternion
@@ -78,16 +121,11 @@ def _pca_axes(points: np.ndarray) -> np.ndarray:
     return Vt.T, S_norm
 
 
-def initial_guess_pca(P: np.ndarray, Q: np.ndarray, allow_scale: bool) -> tuple[np.ndarray, np.ndarray, float]:
+def pca_init_candidates(P: np.ndarray, Q: np.ndarray, allow_scale: bool):
     """
     Centroid alignment + PCA axes with sign disambiguation.
-    Tries 8 sign flip combos, picks lowest NN MSE (Q->P). Returns (R0, t0, s0) mapping Q -> P.
+    Builds all 8 sign-flip x 6 axis-permutation initializations and returns them.
     """
-    try:
-        from scipy.spatial import cKDTree  # type: ignore
-    except ImportError as e:
-        raise RuntimeError("scipy is required for ICP (cKDTree). Install with: pip install scipy") from e
-
     cP = P.mean(axis=0)
     cQ = Q.mean(axis=0)
     Qc = Q - cQ
@@ -110,39 +148,40 @@ def initial_guess_pca(P: np.ndarray, Q: np.ndarray, allow_scale: bool) -> tuple[
         s_base = 1.0
     print(f"[init] base scale guess (sqrt variance ratio): {s_base:.6g}")
 
-    treeP = cKDTree(P)
-    best_cost = np.inf
-    best_R = np.eye(3)
-    best_s = 1.0
-    best_signs = (1, 1, 1)
+    candidates = []
 
-    for sx in (-1, 1):
-        for sy in (-1, 1):
-            for sz in (-1, 1):
-                S = np.diag([sx, sy, sz])
-                R = axes_P @ S @ axes_Q.T
-                if np.linalg.det(R) < 0:
-                    R[:, 2] *= -1
-                s = s_base if allow_scale else 1.0
-                t = cP - s * (cQ @ R.T)
-                Q_guess = apply_similarity(Q, R, t, s)
-                dists, _ = treeP.query(Q_guess, k=1)
-                cost = float(np.mean(dists ** 2))
-                print(f"[init] signs=({sx},{sy},{sz}) det={np.linalg.det(R):.3f} cost={cost:.6g}")
-                if cost < best_cost:
-                    best_cost = cost
-                    best_R = R
-                    best_s = s
-                    best_signs = (sx, sy, sz)
-    best_t = cP - best_s * (cQ @ best_R.T)
-    print(f"[init] best signs={best_signs} cost={best_cost:.6g}")
-    print(f"[init] best R:\n{fmt_mat(best_R)}")
-    print(f"[init] best t: {best_t}")
-    print(f"[init] best s: {best_s}")
-    return best_R, best_t, best_s, best_signs
+    for perm in permutations((0, 1, 2)):
+        axes_Qp = axes_Q[:, perm]
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                for sz in (-1, 1):
+                    S = np.diag([sx, sy, sz]).astype(np.float64)
+                    R = axes_P @ S @ axes_Qp.T
+                    if np.linalg.det(R) < 0:
+                        # Keep correction in PCA/sign space (not world-space columns),
+                        # otherwise permutations can produce inconsistent transforms.
+                        S[2, 2] *= -1.0
+                        R = axes_P @ S @ axes_Qp.T
+                    s = s_base if allow_scale else 1.0
+                    t = cP - s * (cQ @ R.T)
+                    Q_guess = apply_similarity(Q, R, t, s)
+                    cost = chamfer_distance(P, Q_guess)
+                    print(
+                        f"[init] perm={perm} signs=({sx},{sy},{sz}) "
+                        f"det={np.linalg.det(R):.3f} chamfer={cost:.6g}"
+                    )
+                    candidates.append({
+                        "perm": perm,
+                        "signs": (sx, sy, sz),
+                        "R0": R,
+                        "t0": t,
+                        "s0": s,
+                        "init_cost": cost,
+                    })
+    return candidates
 
 
-def icp_align(P: np.ndarray, Q: np.ndarray, allow_scale: bool = False, max_iter: int = 30, tol: float = 1e-6):
+def icp_align(P: np.ndarray, Q: np.ndarray, R0: np.ndarray, t0: np.ndarray, s0: float, allow_scale: bool = False, max_iter: int = 30, tol: float = 1e-6):
     """
     Point-to-point ICP: iteratively find nearest neighbors from current transformed Q to P,
     then solve for best similarity (or rigid) transform.
@@ -153,7 +192,6 @@ def icp_align(P: np.ndarray, Q: np.ndarray, allow_scale: bool = False, max_iter:
     except ImportError as e:
         raise RuntimeError("scipy is required for ICP (cKDTree). Install with: pip install scipy") from e
 
-    R0, t0, s0, best_signs = initial_guess_pca(P, Q, allow_scale)
     R_tot = R0
     t_tot = t0
     s_tot = s0
@@ -162,7 +200,8 @@ def icp_align(P: np.ndarray, Q: np.ndarray, allow_scale: bool = False, max_iter:
     treeP = cKDTree(P)
     prev_err = None
 
-    for _ in range(max_iter):
+    n_iter = 0
+    for it in range(max_iter):
         Q_curr = apply_similarity(Q, R_tot, t_tot, s_tot)
         dists, idx = treeP.query(Q_curr, k=1)
         P_match = P[idx]
@@ -180,10 +219,12 @@ def icp_align(P: np.ndarray, Q: np.ndarray, allow_scale: bool = False, max_iter:
 
         err = float(np.mean(dists ** 2))
         if prev_err is not None and abs(prev_err - err) < tol:
+            n_iter = it + 1
             break
         prev_err = err
+        n_iter = it + 1
 
-    return R_tot, t_tot, s_tot, Q_init_vis, best_signs
+    return R_tot, t_tot, s_tot, Q_init_vis, n_iter
 
 def kabsch_svd(P: np.ndarray, Q: np.ndarray, allow_scale: bool = False):
     """
@@ -233,7 +274,7 @@ def rotation_angle_deg(R: np.ndarray) -> float:
 def fmt_mat(M: np.ndarray) -> str:
     return np.array2string(M, precision=6, suppress_small=False)
 
-def plot_meshes(vtp_path: str, P: np.ndarray, Q_mis: np.ndarray, Q_aligned: np.ndarray, Q_init: np.ndarray | None = None):
+def plot_meshes(vtp_path: str, P: np.ndarray, Q_mis: np.ndarray, trials: list[dict], save_dir: str | None = None):
     # Optional plotting with pyvista (best for meshes)
     try:
         import pyvista as pv  # type: ignore
@@ -246,44 +287,116 @@ def plot_meshes(vtp_path: str, P: np.ndarray, Q_mis: np.ndarray, Q_aligned: np.n
         mesh = mesh.combine()
     if not isinstance(mesh, pv.PolyData):
         mesh = mesh.extract_surface().triangulate()
+    if len(trials) == 0:
+        raise RuntimeError("No ICP trials to plot")
+
+    # First plot: both inputs with PCA/SVD principal vectors.
+    # Also show Q's tripod mapped by the best transform so alignment is visible.
+    best_tr = min(trials, key=lambda x: x["cd_after"])
+    cP = P.mean(axis=0)
+    cQ = Q_mis.mean(axis=0)
+    axes_P, sv_P = _pca_axes(P)
+    axes_Q, sv_Q = _pca_axes(Q_mis)
+    R_best = best_tr["R_est_align"]
+    t_best = best_tr["t_est_align"]
+    s_best = best_tr["s_est_align"]
+    cQ_map = s_best * (cQ @ R_best.T) + t_best
+    axes_Q_map = R_best @ axes_Q
+    bounds = np.vstack([P, Q_mis])
+    diag = float(np.linalg.norm(bounds.max(axis=0) - bounds.min(axis=0)))
+    base_len = max(diag * 0.18, 1e-6)
+    len_P = base_len * (sv_P / max(float(np.max(sv_P)), 1e-12))
+    len_Q = base_len * (sv_Q / max(float(np.max(sv_Q)), 1e-12))
+
+    save_mode = save_dir is not None
+    if save_mode:
+        save_dir = os.path.abspath(save_dir)
+        os.makedirs(save_dir, exist_ok=True)
+        print(f"[plot] output dir: {save_dir}")
+
+    pl0 = pv.Plotter(window_size=(1400, 900), off_screen=save_mode)
+    pl0.add_text("Inputs + PCA/SVD vectors (raw + mapped Q)", font_size=14)
+    mesh_orig = mesh.copy(deep=True)
+    mesh_src = mesh.copy(deep=True)
+    mesh_orig.points = P
+    mesh_src.points = Q_mis
+    # pl0.add_mesh(mesh_orig, opacity=0.08, color="dodgerblue")
+    # pl0.add_mesh(mesh_src, opacity=0.08, color="tomato")
+
+    p_colors = ["royalblue", "deepskyblue", "navy"]
+    q_colors = ["orangered", "gold", "firebrick"]
+    q_map_colors = ["limegreen", "springgreen", "seagreen"]
+    for i in range(3):
+        arr_p = pv.Arrow(start=cP, direction=axes_P[:, i], scale=float(len_P[i]))
+        arr_q = pv.Arrow(start=cQ, direction=axes_Q[:, i], scale=float(len_Q[i]))
+        arr_qm = pv.Arrow(start=cQ_map, direction=axes_Q_map[:, i], scale=float(len_Q[i]))
+        pl0.add_mesh(arr_p, color=p_colors[i])
+        pl0.add_mesh(arr_q, color=q_colors[i])
+        pl0.add_mesh(arr_qm, color=q_map_colors[i])
+    pl0.show_grid()
+    if save_mode:
+        fig1_path = os.path.join(save_dir, "01_inputs_pca_vectors.png")
+        pl0.show(screenshot=fig1_path, auto_close=True)
+        print(f"[plot] saved: {fig1_path}")
+    else:
+        pl0.show()
+    # sys.exit()
+
+    # Second plot: only the best run.
+    best_tr = min(trials, key=lambda x: x["cd_after"])
+    signs = best_tr["signs"]
+    perm = best_tr.get("perm", (0, 1, 2))
+    label = f"best perm={perm} signs={signs}"
+    pl = pv.Plotter(shape=(3, 1), window_size=(1200, 1400), off_screen=save_mode)
+    cP = P.mean(axis=0)
+    mis_cent_err = float(np.linalg.norm(Q_mis.mean(axis=0) - cP))
+    init_cent_err = float(np.linalg.norm(best_tr["Q_init_vis"].mean(axis=0) - cP))
+    aln_cent_err = float(np.linalg.norm(best_tr["Q_aligned"].mean(axis=0) - cP))
+
+    # Row 0: original vs misaligned.
+    pl.subplot(0, 0)
     mesh_orig = mesh.copy(deep=True)
     mesh_mis = mesh.copy(deep=True)
-    mesh_aln = mesh.copy(deep=True)
-    mesh_init = mesh.copy(deep=True) if Q_init is not None else None
-
     mesh_orig.points = P
     mesh_mis.points = Q_mis
-    mesh_aln.points = Q_aligned
-    if mesh_init is not None:
-        mesh_init.points = Q_init
-
-    cols = 3 if Q_init is not None else 2
-    pl = pv.Plotter(shape=(1, cols), window_size=(2000, 700) if cols == 3 else (1400, 700))
-
-    # Left: original vs misaligned
-    pl.subplot(0, 0)
-    pl.add_text("Original vs Misaligned", font_size=12)
-    pl.add_mesh(mesh_orig, opacity=0.3, color="dodgerblue")
-    pl.add_mesh(mesh_mis, opacity=0.3, color="tomato")
+    pl.add_text(f"{label}\nmisaligned cent_err={mis_cent_err:.3g}", font_size=11)
+    pl.add_mesh(mesh_orig, opacity=0.25, color="dodgerblue")
+    pl.add_mesh(mesh_mis, opacity=0.25, color="tomato")
     pl.show_grid()
 
-    if Q_init is not None:
-        pl.subplot(0, 1)
-        pl.add_text("Original vs Initial Guess", font_size=12)
-        pl.add_mesh(mesh_orig, opacity=0.3, color="dodgerblue")
-        pl.add_mesh(mesh_init, opacity=0.3, color="goldenrod")
-        pl.show_grid()
-
-    # Right: original vs re-aligned (zoomed in for detail)
-    pl.subplot(0, cols - 1)
-    pl.add_text("Original vs Re-aligned", font_size=12)
-    pl.add_mesh(mesh_orig, opacity=0.3, color="dodgerblue")
-    pl.add_mesh(mesh_aln, opacity=0.1, color="tomato")
+    # Row 1: original vs initialization of best run.
+    pl.subplot(1, 0)
+    mesh_orig = mesh.copy(deep=True)
+    mesh_init = mesh.copy(deep=True)
+    mesh_orig.points = P
+    mesh_init.points = best_tr["Q_init_vis"]
+    pl.add_text(f"{label}\ninitial cent_err={init_cent_err:.3g}", font_size=11)
+    pl.add_mesh(mesh_orig, opacity=0.25, color="dodgerblue")
+    pl.add_mesh(mesh_init, opacity=0.25, color="goldenrod")
     pl.show_grid()
-    pl.camera.zoom(1.6)
 
-    # Views are independent so we can zoom the right panel without affecting the left.
-    pl.show()
+    # Row 2: original vs final aligned of best run.
+    pl.subplot(2, 0)
+    mesh_orig = mesh.copy(deep=True)
+    mesh_aln = mesh.copy(deep=True)
+    mesh_orig.points = P
+    mesh_aln.points = best_tr["Q_aligned"]
+    pl.add_text(
+        f"{label}\naligned cd={best_tr['cd_after']:.3g} cent_err={aln_cent_err:.3g}",
+        font_size=11,
+    )
+    pl.add_mesh(mesh_orig, opacity=0.25, color="dodgerblue")
+    pl.add_mesh(mesh_aln, opacity=0.25, color="tomato")
+    pl.show_grid()
+    pl.camera.zoom(1.4)
+    pl.link_views()
+
+    if save_mode:
+        fig2_path = os.path.join(save_dir, "02_best_alignment_panels.png")
+        pl.show(screenshot=fig2_path, auto_close=True)
+        print(f"[plot] saved: {fig2_path}")
+    else:
+        pl.show()
 
 def main():
     ap = argparse.ArgumentParser()
@@ -294,7 +407,25 @@ def main():
     ap.add_argument("--deg", type=float, default=45.0, help="Max rotation angle in degrees (applied by slerp from identity)")
     ap.add_argument("--noise", type=float, default=0.0, help="Stddev of Gaussian noise added to misaligned points")
     ap.add_argument("--allow_scale", action="store_true", help="Estimate a uniform scale along with R,t")
-    ap.add_argument("--no_plot", action="store_true", help="Disable plotting")
+    ap.add_argument(
+        "--icp_mode",
+        choices=["all", "best_init"],
+        default="all",
+        help="Run ICP from all PCA/SVD initializations, or only from the best initial Chamfer one",
+    )
+    ap.add_argument("--plot", dest="plot", action="store_true", help="Enable plotting")
+    ap.add_argument("--no_plot", dest="plot", action="store_false", help="Disable plotting (alias)")
+    ap.add_argument(
+        "--save_plots_dir",
+        default=None,
+        help="If set, save plot images to this directory instead of showing plot windows",
+    )
+    ap.add_argument(
+        "--save_aligned_vtp",
+        default=None,
+        help="If set, save the best aligned source mesh to <this_path>/aligned_best.vtp",
+    )
+    ap.set_defaults(plot=False)
     args = ap.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -345,11 +476,56 @@ def main():
         if args.noise > 0:
             Q_mis = Q_mis + rng.normal(scale=args.noise, size=Q_mis.shape)
 
-    # Estimate alignment (align misaligned back to original)
-    t_start = time.time()
-    R_est_align, t_est_align, s_est_align, Q_init_vis, best_signs = icp_align(P, Q_mis, allow_scale=args.allow_scale)  # maps misaligned -> original
-    t_icp = time.time() - t_start
-    Q_aligned = apply_similarity(Q_mis, R_est_align, t_est_align, s_est_align)
+    # Build all PCA/SVD initializations and run ICP from each
+    candidates = pca_init_candidates(P, Q_mis, args.allow_scale)
+    if args.icp_mode == "best_init":
+        candidates_to_run = [min(candidates, key=lambda c: c["init_cost"])]
+        print(
+            "\n[icp] mode=best_init -> running only "
+            f"perm={candidates_to_run[0]['perm']} signs={candidates_to_run[0]['signs']} "
+            f"init_chamfer={candidates_to_run[0]['init_cost']:.12g}"
+        )
+    else:
+        candidates_to_run = candidates
+        print(f"\n[icp] mode=all -> running {len(candidates_to_run)} initializations")
+
+    trials = []
+    for i, cand in enumerate(candidates_to_run):
+        t_start = time.time()
+        R_est_align_i, t_est_align_i, s_est_align_i, Q_init_vis_i, n_iter_i = icp_align(
+            P,
+            Q_mis,
+            cand["R0"],
+            cand["t0"],
+            cand["s0"],
+            allow_scale=args.allow_scale,
+        )
+        t_icp_i = time.time() - t_start
+        Q_aligned_i = apply_similarity(Q_mis, R_est_align_i, t_est_align_i, s_est_align_i)
+        cd_after_i = chamfer_distance(P, Q_aligned_i)
+        trials.append({
+            "idx": i,
+            "perm": cand["perm"],
+            "signs": cand["signs"],
+            "init_cost": cand["init_cost"],
+            "R_est_align": R_est_align_i,
+            "t_est_align": t_est_align_i,
+            "s_est_align": s_est_align_i,
+            "Q_init_vis": Q_init_vis_i,
+            "Q_aligned": Q_aligned_i,
+            "cd_after": cd_after_i,
+            "icp_time": t_icp_i,
+            "n_iter": n_iter_i,
+        })
+
+    best_trial = min(trials, key=lambda x: x["cd_after"])
+    R_est_align = best_trial["R_est_align"]
+    t_est_align = best_trial["t_est_align"]
+    s_est_align = best_trial["s_est_align"]
+    Q_init_vis = best_trial["Q_init_vis"]
+    Q_aligned = best_trial["Q_aligned"]
+    best_signs = best_trial["signs"]
+    t_icp = best_trial["icp_time"]
 
     # For comparison with the ground-truth forward transform (original -> misaligned),
     # take the inverse of the estimated alignment.
@@ -359,7 +535,7 @@ def main():
         t_est_fwd = (-t_est_align @ R_est_align) * s_est_fwd
 
     cd_before = chamfer_distance(P, Q_mis)
-    cd_after = chamfer_distance(P, Q_aligned)
+    cd_after = best_trial["cd_after"]
 
     # Print results
     if R_true is not None:
@@ -378,6 +554,21 @@ def main():
     print(f"best PCA sign combo: {best_signs}")
     print(f"rotation_angle_est_deg ~ {rotation_angle_deg(R_est_align):.6f}")
 
+    print("\n=== ICP runs executed ===")
+    for tr in trials:
+        print(
+            f"run {tr['idx']}: perm={tr.get('perm', (0, 1, 2))} signs={tr['signs']} "
+            f"init_chamfer={tr['init_cost']:.12g} "
+            f"final_chamfer={tr['cd_after']:.12g} "
+            f"iters={tr['n_iter']} time={tr['icp_time']:.3f}s"
+        )
+    print(
+        f"best run: {best_trial['idx']} "
+        f"perm={best_trial.get('perm', (0, 1, 2))} "
+        f"signs={best_trial['signs']} "
+        f"final_chamfer={best_trial['cd_after']:.12g}"
+    )
+
     if args.vtp2 is None:
         print("\n=== Estimated transform (original -> misaligned, inverse of estimate) ===")
         print(f"t_est_fwd  = {t_est_fwd}")
@@ -390,8 +581,13 @@ def main():
     print(f"after  alignment: {cd_after:.12g}")
     print(f"ICP time: {t_icp:.3f} s")
 
-    if not args.no_plot:
-        plot_meshes(args.vtp, P, Q_mis, Q_aligned, Q_init_vis)
+    if args.save_aligned_vtp:
+        template_path = args.vtp2 if args.vtp2 else args.vtp
+        saved_path = save_aligned_vtp(template_path, Q_aligned, args.save_aligned_vtp)
+        print(f"saved aligned mesh: {saved_path}")
+
+    if args.plot or args.save_plots_dir:
+        plot_meshes(args.vtp, P, Q_mis, trials, save_dir=args.save_plots_dir)
 
 if __name__ == "__main__":
     try:
