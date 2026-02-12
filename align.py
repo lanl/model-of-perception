@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Randomly rotate+translate a VTP mesh, then re-align it to the original using SVD (Kabsch).
+Randomly rotate+translate a mesh, then re-align it to the original using SVD (Kabsch).
 Plots:
   (left)  original vs misaligned
   (right) original vs re-aligned
@@ -10,7 +10,7 @@ Also prints:
   - Chamfer distance before/after alignment
 
 Usage:
-  python align_vtp_svd.py --vtp mesh.vtp [--vtp2 mesh2.vtp] --seed 0 --tmax 10 --deg 45 --noise 0.0
+  python align_vtp_svd.py --vtp mesh.vtp [--vtp2 mesh2.glb] --seed 0 --tmax 10 --deg 45 --noise 0.0
 
 Notes:
   - Assumes point-to-point correspondence (same mesh points/order). This is true if you
@@ -26,18 +26,22 @@ import numpy as np
 
 def load_vtp_points(vtp_path: str) -> np.ndarray:
     try:
-        import vtk  # type: ignore
+        import pyvista as pv  # type: ignore
     except ImportError as e:
-        raise RuntimeError("vtk is required to read .vtp files. Install with: pip install vtk") from e
+        raise RuntimeError(
+            "pyvista is required to read mesh files (.vtp/.glb). Install with: pip install pyvista"
+        ) from e
 
-    reader = vtk.vtkXMLPolyDataReader()
-    reader.SetFileName(vtp_path)
-    reader.Update()
-    poly = reader.GetOutput()
-    n = poly.GetNumberOfPoints()
-    pts = np.empty((n, 3), dtype=np.float64)
-    for i in range(n):
-        pts[i] = poly.GetPoint(i)
+    mesh = pv.read(vtp_path)
+    if isinstance(mesh, pv.MultiBlock):
+        mesh = mesh.combine()
+
+    if not hasattr(mesh, "points"):
+        raise RuntimeError(f"Unsupported mesh type for points extraction: {type(mesh)}")
+
+    pts = np.asarray(mesh.points, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        raise RuntimeError(f"Unexpected points shape {pts.shape} from {vtp_path}")
     return pts
 
 def random_rotation_matrix(rng: np.random.Generator) -> np.ndarray:
@@ -238,6 +242,10 @@ def plot_meshes(vtp_path: str, P: np.ndarray, Q_mis: np.ndarray, Q_aligned: np.n
         return
 
     mesh = pv.read(vtp_path)
+    if isinstance(mesh, pv.MultiBlock):
+        mesh = mesh.combine()
+    if not isinstance(mesh, pv.PolyData):
+        mesh = mesh.extract_surface().triangulate()
     mesh_orig = mesh.copy(deep=True)
     mesh_mis = mesh.copy(deep=True)
     mesh_aln = mesh.copy(deep=True)
@@ -279,8 +287,8 @@ def plot_meshes(vtp_path: str, P: np.ndarray, Q_mis: np.ndarray, Q_aligned: np.n
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--vtp", required=True, help="Path to reference .vtp mesh (aligned target)")
-    ap.add_argument("--vtp2", default=None, help="Optional second .vtp mesh to align to the first (skips synthetic transform)")
+    ap.add_argument("--vtp", required=True, help="Path to reference mesh (.vtp/.glb, aligned target)")
+    ap.add_argument("--vtp2", default=None, help="Optional second mesh (.vtp/.glb) to align to the first (skips synthetic transform)")
     ap.add_argument("--seed", type=int, default=0, help="RNG seed")
     ap.add_argument("--tmax", type=float, default=10.0, help="Max abs translation per axis (uniform in [-tmax, tmax])")
     ap.add_argument("--deg", type=float, default=45.0, help="Max rotation angle in degrees (applied by slerp from identity)")
