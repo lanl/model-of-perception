@@ -47,7 +47,18 @@ def load_vtp_points(vtp_path: str) -> np.ndarray:
     return pts
 
 
-def save_aligned_vtp(template_mesh_path: str, aligned_points: np.ndarray, out_dir_or_prefix: str) -> str:
+def _path_stem(path: str) -> str:
+    stem = os.path.splitext(os.path.basename(path))[0]
+    stem = stem.strip()
+    return stem if stem else "mesh"
+
+
+def save_aligned_vtp(
+    template_mesh_path: str,
+    aligned_points: np.ndarray,
+    out_dir_or_prefix: str,
+    output_stem: str,
+) -> str:
     """Save aligned points into a VTP mesh, reusing topology from template when possible."""
     try:
         import pyvista as pv  # type: ignore
@@ -83,7 +94,7 @@ def save_aligned_vtp(template_mesh_path: str, aligned_points: np.ndarray, out_di
         normalized = normalized[:-4]
     out_dir = os.path.abspath(normalized)
     os.makedirs(out_dir, exist_ok=True)
-    final_out = os.path.join(out_dir, "aligned_best.vtp")
+    final_out = os.path.join(out_dir, f"{output_stem}_aligned.vtp")
     out_mesh.save(final_out)
     return final_out
 
@@ -274,7 +285,14 @@ def rotation_angle_deg(R: np.ndarray) -> float:
 def fmt_mat(M: np.ndarray) -> str:
     return np.array2string(M, precision=6, suppress_small=False)
 
-def plot_meshes(vtp_path: str, P: np.ndarray, Q_mis: np.ndarray, trials: list[dict], save_dir: str | None = None):
+def plot_meshes(
+    vtp_path: str,
+    P: np.ndarray,
+    Q_mis: np.ndarray,
+    trials: list[dict],
+    save_dir: str | None = None,
+    output_stem: str = "mesh",
+):
     # Optional plotting with pyvista (best for meshes)
     try:
         import pyvista as pv  # type: ignore
@@ -335,7 +353,7 @@ def plot_meshes(vtp_path: str, P: np.ndarray, Q_mis: np.ndarray, trials: list[di
         pl0.add_mesh(arr_qm, color=q_map_colors[i])
     pl0.show_grid()
     if save_mode:
-        fig1_path = os.path.join(save_dir, "01_inputs_pca_vectors.png")
+        fig1_path = os.path.join(save_dir, f"{output_stem}_01_inputs_pca_vectors.png")
         pl0.show(screenshot=fig1_path, auto_close=True)
         print(f"[plot] saved: {fig1_path}")
     else:
@@ -392,7 +410,7 @@ def plot_meshes(vtp_path: str, P: np.ndarray, Q_mis: np.ndarray, trials: list[di
     pl.link_views()
 
     if save_mode:
-        fig2_path = os.path.join(save_dir, "02_best_alignment_panels.png")
+        fig2_path = os.path.join(save_dir, f"{output_stem}_02_best_alignment_panels.png")
         pl.show(screenshot=fig2_path, auto_close=True)
         print(f"[plot] saved: {fig2_path}")
     else:
@@ -475,6 +493,9 @@ def main():
         Q_mis = apply_similarity(P, R_true, t_true, s_true)
         if args.noise > 0:
             Q_mis = Q_mis + rng.normal(scale=args.noise, size=Q_mis.shape)
+
+    unaligned_source_path = args.vtp2 if args.vtp2 else args.vtp
+    output_stem = _path_stem(unaligned_source_path)
 
     # Build all PCA/SVD initializations and run ICP from each
     candidates = pca_init_candidates(P, Q_mis, args.allow_scale)
@@ -583,11 +604,11 @@ def main():
 
     if args.save_aligned_vtp:
         template_path = args.vtp2 if args.vtp2 else args.vtp
-        saved_path = save_aligned_vtp(template_path, Q_aligned, args.save_aligned_vtp)
+        saved_path = save_aligned_vtp(template_path, Q_aligned, args.save_aligned_vtp, output_stem)
         print(f"saved aligned mesh: {saved_path}")
 
     if args.plot or args.save_plots_dir:
-        plot_meshes(args.vtp, P, Q_mis, trials, save_dir=args.save_plots_dir)
+        plot_meshes(args.vtp, P, Q_mis, trials, save_dir=args.save_plots_dir, output_stem=output_stem)
 
 if __name__ == "__main__":
     try:
