@@ -2,10 +2,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import re
 from scipy.interpolate import griddata
-from scipy.ndimage import gaussian_filter
 from nerf_imdb.fibonacci_lattice import fibonacci_lattice
 import sys
 from scipy.interpolate import RectBivariateSpline
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
 
@@ -21,26 +21,46 @@ else:
 with open(L2_file) as f:
     lines = f.readlines()
 
-parsed = []
+# Mode A: direct CSV rows azimuth,elevation,...,value (uses first 2 columns and last column)
+csv_rows = []
 for line in lines:
-    match = re.findall(r"[-+]?\d*\.\d+|\d+", line)
-    if match:
-        last_val = float(match[-1])
-        parsed.append((line.strip(), last_val))
+    parts = [p.strip() for p in line.strip().split(",")]
+    if len(parts) < 3:
+        continue
+    try:
+        az = float(parts[0])
+        el = float(parts[1])
+        val = float(parts[-1])
+    except ValueError:
+        continue
+    csv_rows.append((az, el, val))
 
-sorted_lines = sorted(parsed, key=lambda x: x[1])
+if csv_rows:
+    arr = np.asarray(csv_rows, dtype=np.float64)
+    azim = arr[:, 0]
+    elev = arr[:, 1]
+    vals = arr[:, 2]
+    order = np.argsort(vals)
+    for i in order:
+        print(f"{azim[i]},{elev[i]},{vals[i]}")
+else:
+    # Mode B: legacy lines containing checkpoint/lattice index -> map to fibonacci lattice
+    parsed = []
+    for line in lines:
+        match = re.findall(r"[-+]?\d*\.\d+|\d+", line)
+        if match:
+            last_val = float(match[-1])
+            parsed.append((line.strip(), last_val))
 
-for line, _ in sorted_lines:
-    print(line)
+    sorted_lines = sorted(parsed, key=lambda x: x[1])
+    for line, _ in sorted_lines:
+        print(line)
 
-numberOfAngles = len(sorted_lines)
-# Generate spherical coordinates
-elevations, azimuths = fibonacci_lattice(numberOfAngles)
-    
-L2_vals = np.full(numberOfAngles, np.nan)
+    numberOfAngles = len(sorted_lines)
+    elevations, azimuths = fibonacci_lattice(numberOfAngles)
+    L2_vals = np.full(numberOfAngles, np.nan)
 
-with open(L2_file) as f:
-    for line in f:
+    for line in lines:
         match = re.search(r'(?:checkpoint_(\d+)|lattice:\s+(\d+))', line)
         if match:
             number = match.group(1) or match.group(2) if match else None
@@ -49,18 +69,22 @@ with open(L2_file) as f:
                 try:
                     val = float(line.strip().split()[-1])
                     L2_vals[idx] = val
-                except:
+                except Exception:
                     continue
 
-# Filter valid entries
-mask = ~np.isnan(L2_vals)
-elev = elevations[mask]
-azim = azimuths[mask]
-#azim = azimuths[mask] % 90
-vals = L2_vals[mask]
+    mask = ~np.isnan(L2_vals)
+    elev = elevations[mask]
+    azim = azimuths[mask]
+    vals = L2_vals[mask]
+
+if vals.size == 0:
+    raise RuntimeError(
+        "No numeric values parsed. Expected either CSV rows like 'az,el,...,value' "
+        "or legacy lines containing checkpoint/lattice indices."
+    )
 
 # Remove upper outliers (e.g. > 95th percentile)
-q95 = np.percentile(vals, 99)
+q95 = np.percentile(vals, 95)
 valid = vals <= q95
 elev_filt = elev[valid]
 azim_filt = azim[valid]
@@ -83,105 +107,118 @@ vals_filt = vals[valid]
 #bad_mask = vals_filt < 1e-6
 #valid_mask = ~bad_mask
 
-# Define regular grid with your specified ranges
-azim_lin = np.linspace(0, 90, 90, endpoint=False)         # periodic
-#azim_lin = np.linspace(0, 360, 360, endpoint=False)         # periodic
-elev_lin = np.linspace(-90, 90, 180)                      # periodic
+# Interpolate directly in the same plotting domain (no angle remapping).
+x_min, x_max = float(np.min(azim_filt)), float(np.max(azim_filt))
+y_min, y_max = float(np.min(elev_filt)), float(np.max(elev_filt))
+azim_lin = np.linspace(x_min, x_max, 360)
+elev_lin = np.linspace(y_min, y_max, 180)
 AZIM, ELEV = np.meshgrid(azim_lin, elev_lin)
 
-## Original valid values
-#az = azim_filt[valid_mask]
-#el = elev_filt[valid_mask]
-#va = vals_filt[valid_mask]
+points = np.stack((azim_filt, elev_filt), axis=1)
+query = np.stack((AZIM.ravel(), ELEV.ravel()), axis=1)
 
-# Original valid values
-az = azim_filt
-el = elev_filt
-va = vals_filt
-
-# Wrap azimuth (0–90)
-az_wrapped = np.concatenate([
-    az,
-    (az + 90) % 90,
-    (az - 90) % 90
-])
-## Wrap azimuth (0–90)
-#az_wrapped = np.concatenate([
-#    az,
-#    (az + 360) % 360,
-#    (az - 360) % 360
-#])
-
-el_wrapped = np.concatenate([
-    el,
-    el,
-    el
-])
-
-val_wrapped = np.concatenate([
-    va,
-    va,
-    va
-])
-
-# Wrap elevation (−90 to 90)
-az_final = np.concatenate([az_wrapped, az_wrapped, az_wrapped])
-el_final = np.concatenate([
-    el_wrapped,
-    np.clip(el_wrapped + 180, -90, 90),
-    np.clip(el_wrapped - 180, -90, 90)
-])
-val_final = np.concatenate([val_wrapped, val_wrapped, val_wrapped])
-
-# Final shape check
-assert az_final.shape == el_final.shape == val_final.shape
-
-# Interpolate to grid
-points = np.stack((az_final, el_final), axis=1)
-grid_vals = griddata(points, val_final, (AZIM, ELEV), method='linear')
+# Prefer smooth interpolation to avoid piecewise-constant corner artifacts.
+try:
+    from scipy.interpolate import RBFInterpolator
+    rbf = RBFInterpolator(points, vals_filt, kernel="thin_plate_spline", smoothing=1e-10)
+    grid_vals = rbf(query).reshape(AZIM.shape)
+except Exception:
+    # Fallback path: cubic + linear + nearest fill.
+    grid_cubic = griddata(points, vals_filt, (AZIM, ELEV), method='cubic')
+    grid_linear = griddata(points, vals_filt, (AZIM, ELEV), method='linear')
+    grid_vals = np.where(np.isfinite(grid_cubic), grid_cubic, grid_linear)
+    if np.any(~np.isfinite(grid_vals)):
+        grid_nn = griddata(points, vals_filt, (AZIM, ELEV), method='nearest')
+        grid_vals = np.where(np.isfinite(grid_vals), grid_vals, grid_nn)
 
 
-# Final smooth to clean up
-smoothed_vals = gaussian_filter(grid_vals, sigma=4, mode=['wrap', 'wrap'])
+# Automatic shared color scale from actual linear-value range
+linear_vals = np.concatenate([vals_filt.ravel(), grid_vals[np.isfinite(grid_vals)].ravel()])
+if linear_vals.size > 0:
+    vmin = float(np.min(linear_vals))
+    vmax = float(np.max(linear_vals))
+else:
+    vmin, vmax = 0.0, 1.0
+if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+    vmin, vmax = 0.0, 1.0
 
+# Log plot data (base-10) from interpolated grid
+eps = max(vmax * 1e-12, 1e-20)
+log_grid_vals = np.log10(np.clip(grid_vals, eps, None))
+finite_log = np.isfinite(log_grid_vals)
+if np.any(finite_log):
+    log_vmin = float(np.nanmin(log_grid_vals[finite_log]))
+    log_vmax = float(np.nanmax(log_grid_vals[finite_log]))
+else:
+    log_vmin, log_vmax = -12.0, 0.0
 # Plot
 fig, axs = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
+
+# Compute common axis limits based on actual scalar range
+def representative_ticks(values: np.ndarray, max_ticks: int) -> np.ndarray:
+    uniq = np.unique(np.round(values.astype(np.float64), 8))
+    if uniq.size <= max_ticks:
+        return uniq
+    idx = np.linspace(0, uniq.size - 1, max_ticks).astype(int)
+    return uniq[idx]
+
+xticks = representative_ticks(azim_filt, max_ticks=9)
+yticks = representative_ticks(elev_filt, max_ticks=7)
 
 # 1. Raw scatter
 sc = axs[0].scatter(azim_filt, elev_filt, c=vals_filt, cmap='viridis', s=50)
 axs[0].set_title('Scatter (Filtered)')
 axs[0].set_xlabel('Azimuth (°)')
 axs[0].set_ylabel('Elevation (°)')
+axs[0].set_xlim(x_min, x_max)
+axs[0].set_ylim(y_min, y_max)
 axs[0].grid(True)
 
 # 2. Interpolated
 im1 = axs[1].imshow(
     grid_vals,
 #    extent=(0, 90, min(elev), max(elev)),
-    extent=(0, 360, min(elev), max(elev)),
+    extent=(x_min, x_max, y_min, y_max),
     origin='lower',
     aspect='auto',
     cmap='viridis',
-    vmin=0, vmax=0.2
+    vmin=vmin, vmax=vmax
 )
 axs[1].set_title('Interpolated')
 axs[1].set_xlabel('Azimuth (°)')
+axs[1].set_xlim(x_min, x_max)
+axs[1].set_ylim(y_min, y_max)
 axs[1].grid(True)
 
-# 3. Smoothed
+# 3. Log Interpolated
 im2 = axs[2].imshow(
-    smoothed_vals,
+    log_grid_vals,
 #    extent=(0, 90, min(elev), max(elev)),
-    extent=(0, 360, min(elev), max(elev)),
+    extent=(x_min, x_max, y_min, y_max),
     origin='lower',
     aspect='auto',
-    cmap='viridis',
-    vmin=0, vmax=0.2
+    cmap='viridis'
+    ,vmin=log_vmin, vmax=log_vmax
 )
-axs[2].set_title('Smoothed')
+axs[2].set_title('Interpolated (log10)')
 axs[2].set_xlabel('Azimuth (°)')
+axs[2].set_xlim(x_min, x_max)
+axs[2].set_ylim(y_min, y_max)
 axs[2].grid(True)
 
-fig.colorbar(im2, ax=axs[2], label='L2 Value', shrink=0.9)
+# Force identical tick positions on all panels.
+for ax in axs:
+    ax.set_xticks(xticks)
+    ax.set_yticks(yticks)
+
+# Colorbar for panel 1 (scatter)
+divider0 = make_axes_locatable(axs[0])
+cax0 = divider0.append_axes("right", size="4%", pad=0.06)
+fig.colorbar(sc, cax=cax0, label='L2 Value')
+
+# Put colorbar in a dedicated axis so subplot 3 keeps the same size as the others.
+divider = make_axes_locatable(axs[2])
+cax = divider.append_axes("right", size="4%", pad=0.06)
+fig.colorbar(im2, cax=cax, label='log10(L2 Value)')
 plt.tight_layout()
 plt.show()
