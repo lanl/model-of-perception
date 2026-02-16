@@ -75,10 +75,12 @@ def build_index_pivot(plane, x_col, y_col, val_col):
             j = y_map[yv]
             z[j, i] = float(row[val_col])
 
+    # Fill missing entries with maximum value (worst case for L2 error minimization)
     if np.isnan(z).any():
         finite_vals = z[np.isfinite(z)]
-        fill = float(np.nanmean(finite_vals)) if finite_vals.size else 0.0
+        fill = float(np.nanmax(finite_vals)) if finite_vals.size else 1.0
         z[np.isnan(z)] = fill
+        print(f"  Filled {np.isnan(z).sum()} missing entries with max value: {fill:.6e}")
 
     return z, x_vals, y_vals, x_map, y_map
 
@@ -372,10 +374,12 @@ def plot_colormap_slice(df, az_col, el_col, iso_col, colormap_col, l2_col,
             j = y_map[yv]
             z[j, i] = float(row[l2_col])
 
+    # Fill missing entries with maximum value (worst case for L2 error minimization)
     if np.isnan(z).any():
         finite_vals = z[np.isfinite(z)]
-        fill = float(np.nanmean(finite_vals)) if finite_vals.size else 0.0
+        fill = float(np.nanmax(finite_vals)) if finite_vals.size else 1.0
         z[np.isnan(z)] = fill
+        print(f"  Filled {np.isnan(z).sum()} missing entries with max value: {fill:.6e}")
 
     fig, ax = plt.subplots()
     
@@ -511,10 +515,17 @@ def main():
     else:
         print(f"WARNING: Images directory does not exist!")
 
-    # Plot traditional slices for best colormap
+    # Generate ALL 2D slices through the 4D space (iso, az, el, colormap)
+    # At the optimal point (az0, el0, iso0, cmap0), we create 6 types of 2D slices:
+    
+    print("\n=== Generating all 2D slices through 4D space ===\n")
+    
+    # Load images for the optimal colormap
     images_index = parse_image_triplets(args.images_dir, cmap0)
     print(f"Loaded {len(images_index)} images for colormap {cmap0}")
 
+    # 1. ISO fixed, colormap fixed → AZ vs EL
+    print(f"\n1. Slice: AZ vs EL (fixing ISO={iso0:.6f}, colormap={cmap0})")
     plot_slice(
         df_long, az_col, el_col, iso_col, l2_col,
         fixed_axis=iso_col, fixed_value=iso0,
@@ -525,6 +536,8 @@ def main():
         fixed_colormap=cmap0,
     )
 
+    # 2. AZ fixed, colormap fixed → ISO vs EL
+    print(f"\n2. Slice: ISO vs EL (fixing AZ={az0:.1f}, colormap={cmap0})")
     plot_slice(
         df_long, az_col, el_col, iso_col, l2_col,
         fixed_axis=az_col, fixed_value=az0,
@@ -535,6 +548,8 @@ def main():
         fixed_colormap=cmap0,
     )
 
+    # 3. EL fixed, colormap fixed → AZ vs ISO
+    print(f"\n3. Slice: AZ vs ISO (fixing EL={el0:.1f}, colormap={cmap0})")
     plot_slice(
         df_long, az_col, el_col, iso_col, l2_col,
         fixed_axis=el_col, fixed_value=el0,
@@ -545,8 +560,8 @@ def main():
         fixed_colormap=cmap0,
     )
 
-    # Plot colormap slices at optimal values
-    # 1. Colormap vs AZ at optimal iso and el
+    # 4. ISO fixed, EL fixed → Colormap vs AZ
+    print(f"\n4. Slice: Colormap vs AZ (fixing ISO={iso0:.6f}, EL={el0:.1f})")
     plot_colormap_slice(
         df_long, az_col, el_col, iso_col, colormap_col, l2_col,
         fixed_axis=iso_col, fixed_value=iso0,
@@ -556,7 +571,8 @@ def main():
         thumb_zoom=args.thumb_zoom,
     )
 
-    # 2. Colormap vs ISO at optimal az and el
+    # 5. AZ fixed, EL fixed → Colormap vs ISO
+    print(f"\n5. Slice: Colormap vs ISO (fixing AZ={az0:.1f}, EL={el0:.1f})")
     plot_colormap_slice(
         df_long, az_col, el_col, iso_col, colormap_col, l2_col,
         fixed_axis=az_col, fixed_value=az0,
@@ -566,7 +582,8 @@ def main():
         thumb_zoom=args.thumb_zoom,
     )
 
-    # 3. Colormap vs EL at optimal az and iso
+    # 6. AZ fixed, ISO fixed → Colormap vs EL
+    print(f"\n6. Slice: Colormap vs EL (fixing AZ={az0:.1f}, ISO={iso0:.6f})")
     plot_colormap_slice(
         df_long, az_col, el_col, iso_col, colormap_col, l2_col,
         fixed_axis=el_col, fixed_value=el0,
