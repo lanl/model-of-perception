@@ -196,18 +196,28 @@ else:
                 grid_vals = np.where(np.isfinite(grid_vals), grid_vals, med)
 
 
-# Automatic shared color scale from actual linear-value range
-linear_vals = np.concatenate([vals_filt.ravel(), grid_vals[np.isfinite(grid_vals)].ravel()])
-if linear_vals.size > 0:
-    vmin = float(np.min(linear_vals))
-    vmax = float(np.max(linear_vals))
+# Compute automatic color scales for each plot independently
+# Scatter plot range
+if vals_filt.size > 0:
+    scatter_vmin = float(np.min(vals_filt))
+    scatter_vmax = float(np.max(vals_filt))
 else:
-    vmin, vmax = 0.0, 1.0
-if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
-    vmin, vmax = 0.0, 1.0
+    scatter_vmin, scatter_vmax = 0.0, 1.0
+if not np.isfinite(scatter_vmin) or not np.isfinite(scatter_vmax) or scatter_vmax <= scatter_vmin:
+    scatter_vmin, scatter_vmax = 0.0, 1.0
+
+# Interpolated grid range
+finite_grid = grid_vals[np.isfinite(grid_vals)]
+if finite_grid.size > 0:
+    interp_vmin = float(np.min(finite_grid))
+    interp_vmax = float(np.max(finite_grid))
+else:
+    interp_vmin, interp_vmax = 0.0, 1.0
+if not np.isfinite(interp_vmin) or not np.isfinite(interp_vmax) or interp_vmax <= interp_vmin:
+    interp_vmin, interp_vmax = 0.0, 1.0
 
 # Log plot data (base-10) from interpolated grid
-eps = max(vmax * 1e-12, 1e-20)
+eps = max(interp_vmax * 1e-12, 1e-20)
 log_grid_vals = np.log10(np.clip(grid_vals, eps, None))
 finite_log = np.isfinite(log_grid_vals)
 if np.any(finite_log):
@@ -229,8 +239,9 @@ def representative_ticks(values: np.ndarray, max_ticks: int) -> np.ndarray:
 xticks = representative_ticks(azim_filt, max_ticks=9)
 yticks = representative_ticks(elev_filt, max_ticks=7)
 
-# 1. Raw scatter
-sc = axs[0].scatter(azim_filt, elev_filt, c=vals_filt, cmap='viridis', s=50)
+# 1. Raw scatter (uses its own automatic range)
+sc = axs[0].scatter(azim_filt, elev_filt, c=vals_filt, cmap='viridis', s=50, 
+                    vmin=scatter_vmin, vmax=scatter_vmax)
 axs[0].set_title('Scatter (Filtered)')
 axs[0].set_xlabel('Azimuth (°)')
 axs[0].set_ylabel('Elevation (°)')
@@ -238,7 +249,7 @@ axs[0].set_xlim(x_min, x_max)
 axs[0].set_ylim(y_min, y_max)
 axs[0].grid(True)
 
-# 2. Interpolated
+# 2. Interpolated (uses its own automatic range)
 im1 = axs[1].imshow(
     grid_vals,
 #    extent=(0, 90, min(elev), max(elev)),
@@ -246,7 +257,7 @@ im1 = axs[1].imshow(
     origin='lower',
     aspect='auto',
     cmap='viridis',
-    vmin=vmin, vmax=vmax
+    vmin=interp_vmin, vmax=interp_vmax
 )
 axs[1].set_title('Interpolated')
 axs[1].set_xlabel('Azimuth (°)')
@@ -280,9 +291,14 @@ divider0 = make_axes_locatable(axs[0])
 cax0 = divider0.append_axes("right", size="4%", pad=0.06)
 fig.colorbar(sc, cax=cax0, label='L2 Value')
 
-# Put colorbar in a dedicated axis so subplot 3 keeps the same size as the others.
-divider = make_axes_locatable(axs[2])
-cax = divider.append_axes("right", size="4%", pad=0.06)
-fig.colorbar(im2, cax=cax, label='log10(L2 Value)')
+# Colorbar for panel 2 (interpolated)
+divider1 = make_axes_locatable(axs[1])
+cax1 = divider1.append_axes("right", size="4%", pad=0.06)
+fig.colorbar(im1, cax=cax1, label='L2 Value')
+
+# Colorbar for panel 3 (log interpolated)
+divider2 = make_axes_locatable(axs[2])
+cax2 = divider2.append_axes("right", size="4%", pad=0.06)
+fig.colorbar(im2, cax=cax2, label='log10(L2 Value)')
 plt.tight_layout()
 plt.show()
