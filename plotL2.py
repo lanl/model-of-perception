@@ -23,17 +23,42 @@ with open(L2_file) as f:
 
 # Mode A: direct CSV rows azimuth,elevation,...,value (uses first 2 columns and last column)
 csv_rows = []
-for line in lines:
-    parts = [p.strip() for p in line.strip().split(",")]
-    if len(parts) < 3:
-        continue
-    try:
-        az = float(parts[0])
-        el = float(parts[1])
-        val = float(parts[-1])
-    except ValueError:
-        continue
-    csv_rows.append((az, el, val))
+if lines:
+    header_parts = [p.strip() for p in lines[0].strip().split(",")]
+    header_lower = [h.lower() for h in header_parts]
+    has_header = ("az" in header_lower and "el" in header_lower)
+else:
+    has_header = False
+    header_parts = []
+    header_lower = []
+
+if has_header:
+    az_idx = header_lower.index("az")
+    el_idx = header_lower.index("el")
+    val_idx = len(header_parts) - 1  # default: last column
+    for line in lines[1:]:
+        parts = [p.strip() for p in line.strip().split(",")]
+        if len(parts) <= max(az_idx, el_idx, val_idx):
+            continue
+        try:
+            az = float(parts[az_idx])
+            el = float(parts[el_idx])
+            val = float(parts[val_idx])
+        except ValueError:
+            continue
+        csv_rows.append((az, el, val))
+else:
+    for line in lines:
+        parts = [p.strip() for p in line.strip().split(",")]
+        if len(parts) < 3:
+            continue
+        try:
+            az = float(parts[0])
+            el = float(parts[1])
+            val = float(parts[-1])
+        except ValueError:
+            continue
+        csv_rows.append((az, el, val))
 
 if csv_rows:
     arr = np.asarray(csv_rows, dtype=np.float64)
@@ -84,7 +109,7 @@ if vals.size == 0:
     )
 
 # Remove upper outliers (e.g. > 95th percentile)
-q95 = np.percentile(vals, 95)
+q95 = np.percentile(vals, 100)
 valid = vals <= q95
 elev_filt = elev[valid]
 azim_filt = azim[valid]
@@ -117,19 +142,58 @@ AZIM, ELEV = np.meshgrid(azim_lin, elev_lin)
 points = np.stack((azim_filt, elev_filt), axis=1)
 query = np.stack((AZIM.ravel(), ELEV.ravel()), axis=1)
 
-# Prefer smooth interpolation to avoid piecewise-constant corner artifacts.
-try:
-    from scipy.interpolate import RBFInterpolator
-    rbf = RBFInterpolator(points, vals_filt, kernel="thin_plate_spline", smoothing=1e-10)
-    grid_vals = rbf(query).reshape(AZIM.shape)
-except Exception:
-    # Fallback path: cubic + linear + nearest fill.
-    grid_cubic = griddata(points, vals_filt, (AZIM, ELEV), method='cubic')
-    grid_linear = griddata(points, vals_filt, (AZIM, ELEV), method='linear')
-    grid_vals = np.where(np.isfinite(grid_cubic), grid_cubic, grid_linear)
-    if np.any(~np.isfinite(grid_vals)):
-        grid_nn = griddata(points, vals_filt, (AZIM, ELEV), method='nearest')
-        grid_vals = np.where(np.isfinite(grid_vals), grid_vals, grid_nn)
+# Robust interpolation:
+# - full 2D: smooth RBF, then linear/nearest fallback
+# - rank-deficient (effectively 1D): interpolate along varying axis and tile
+ptp_x = float(np.ptp(azim_filt))
+ptp_y = float(np.ptp(elev_filt))
+rank = int(np.linalg.matrix_rank(points - points.mean(axis=0)))
+if rank < 2 or ptp_x < 1e-12 or ptp_y < 1e-12:
+    print("[warn] Input samples are effectively 1D; using 1D interpolation fallback.")
+    if ptp_x >= ptp_y:
+        order = np.argsort(azim_filt)
+        x_sorted = azim_filt[order]
+        v_sorted = vals_filt[order]
+        # Collapse duplicate x by averaging
+        ux, inv = np.unique(x_sorted, return_inverse=True)
+        uv = np.zeros_like(ux, dtype=np.float64)
+        cnt = np.zeros_like(ux, dtype=np.int64)
+        np.add.at(uv, inv, v_sorted)
+        np.add.at(cnt, inv, 1)
+        uv = uv / np.maximum(cnt, 1)
+        line = np.interp(azim_lin, ux, uv)
+        grid_vals = np.tile(line[None, :], (elev_lin.size, 1))
+    else:
+        order = np.argsort(elev_filt)
+        y_sorted = elev_filt[order]
+        v_sorted = vals_filt[order]
+        uy, inv = np.unique(y_sorted, return_inverse=True)
+        uv = np.zeros_like(uy, dtype=np.float64)
+        cnt = np.zeros_like(uy, dtype=np.int64)
+        np.add.at(uv, inv, v_sorted)
+        np.add.at(cnt, inv, 1)
+        uv = uv / np.maximum(cnt, 1)
+        line = np.interp(elev_lin, uy, uv)
+        grid_vals = np.tile(line[:, None], (1, azim_lin.size))
+else:
+    try:
+        from scipy.interpolate import RBFInterpolator
+        rbf = RBFInterpolator(points, vals_filt, kernel="thin_plate_spline", smoothing=1e-10)
+        grid_vals = rbf(query).reshape(AZIM.shape)
+    except Exception:
+        # Fallback path: linear + nearest fill.
+        try:
+            grid_vals = griddata(points, vals_filt, (AZIM, ELEV), method='linear')
+        except Exception:
+            grid_vals = np.full_like(AZIM, np.nan, dtype=np.float64)
+        if np.any(~np.isfinite(grid_vals)):
+            try:
+                grid_nn = griddata(points, vals_filt, (AZIM, ELEV), method='nearest')
+                grid_vals = np.where(np.isfinite(grid_vals), grid_vals, grid_nn)
+            except Exception:
+                # last resort: fill with median value
+                med = float(np.nanmedian(vals_filt))
+                grid_vals = np.where(np.isfinite(grid_vals), grid_vals, med)
 
 
 # Automatic shared color scale from actual linear-value range

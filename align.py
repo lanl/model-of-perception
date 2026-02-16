@@ -107,6 +107,20 @@ def _path_stem(path: str) -> str:
     return stem if stem else "mesh"
 
 
+def _copy_pyvista_data_arrays(template_mesh, out_mesh) -> None:
+    # Copy point arrays (must match number of points)
+    for name in list(template_mesh.point_data.keys()):
+        arr = template_mesh.point_data[name]
+        if getattr(arr, "shape", (0,))[0] == out_mesh.n_points:
+            out_mesh.point_data[name] = arr.copy()
+    # Copy cell arrays
+    for name in list(template_mesh.cell_data.keys()):
+        out_mesh.cell_data[name] = template_mesh.cell_data[name].copy()
+    # Copy field arrays
+    for name in list(template_mesh.field_data.keys()):
+        out_mesh.field_data[name] = template_mesh.field_data[name].copy()
+
+
 def save_aligned_vtp(
     template_mesh_path: str,
     aligned_points: np.ndarray,
@@ -177,6 +191,7 @@ def save_aligned_vtp(
         )
     out_mesh = mesh.copy(deep=True)
     out_mesh.points = pts
+    _copy_pyvista_data_arrays(mesh, out_mesh)
 
     normalized = out_dir_or_prefix.rstrip(" .")
     if not normalized:
@@ -516,6 +531,7 @@ def plot_meshes(
         pl.show()
 
 def main():
+    t_all_start = time.time()
     ap = argparse.ArgumentParser()
     ap.add_argument("--vtp", required=True, help="Path to reference mesh (.vtp/.glb, aligned target)")
     ap.add_argument("--vtp2", default=None, help="Optional second mesh (.vtp/.glb) to align to the first (skips synthetic transform)")
@@ -597,7 +613,9 @@ def main():
     output_stem = _path_stem(unaligned_source_path)
 
     # Build all PCA/SVD initializations and run ICP from each
+    t_init_start = time.time()
     candidates = pca_init_candidates(P, Q_mis, args.allow_scale)
+    t_init = time.time() - t_init_start
     if args.icp_mode == "best_init":
         candidates_to_run = [min(candidates, key=lambda c: c["init_cost"])]
         print(
@@ -610,6 +628,8 @@ def main():
         print(f"\n[icp] mode=all -> running {len(candidates_to_run)} initializations")
 
     trials = []
+    t_icp_total = 0.0
+    t_chamfer_total = 0.0
     for i, cand in enumerate(candidates_to_run):
         t_start = time.time()
         R_est_align_i, t_est_align_i, s_est_align_i, Q_init_vis_i, n_iter_i = icp_align(
@@ -621,8 +641,11 @@ def main():
             allow_scale=args.allow_scale,
         )
         t_icp_i = time.time() - t_start
+        t_icp_total += t_icp_i
         Q_aligned_i = apply_similarity(Q_mis, R_est_align_i, t_est_align_i, s_est_align_i)
+        t_chamfer_i = time.time()
         cd_after_i = chamfer_distance(P, Q_aligned_i)
+        t_chamfer_total += time.time() - t_chamfer_i
         trials.append({
             "idx": i,
             "perm": cand["perm"],
@@ -654,8 +677,11 @@ def main():
         R_est_fwd = R_est_align.T
         t_est_fwd = (-t_est_align @ R_est_align) * s_est_fwd
 
+    t_chamfer_i = time.time()
     cd_before = chamfer_distance(P, Q_mis)
+    t_chamfer_total += time.time() - t_chamfer_i
     cd_after = best_trial["cd_after"]
+    t_all = time.time() - t_all_start
 
     # Print results
     if R_true is not None:
@@ -700,6 +726,13 @@ def main():
     print(f"before alignment: {cd_before:.12g}")
     print(f"after  alignment: {cd_after:.12g}")
     print(f"ICP time: {t_icp:.3f} s")
+
+    print("\n=== Timing (s) ===")
+    print(f"init: {t_init:.3f}")
+    print(f"chamfer: {t_chamfer_total:.3f}")
+    print(f"icp: {t_icp_total:.3f}")
+    print(f"align (init+icp): {t_init + t_icp_total:.3f}")
+    print(f"all: {t_all:.3f}")
 
     if args.save_aligned_vtp:
         template_path = args.vtp2 if args.vtp2 else args.vtp
