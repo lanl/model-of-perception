@@ -109,7 +109,7 @@ if vals.size == 0:
     )
 
 # Remove upper outliers (e.g. > 95th percentile)
-q95 = np.percentile(vals, 100)
+q95 = np.percentile(vals, 95)
 valid = vals <= q95
 elev_filt = elev[valid]
 azim_filt = azim[valid]
@@ -176,24 +176,38 @@ if rank < 2 or ptp_x < 1e-12 or ptp_y < 1e-12:
         line = np.interp(elev_lin, uy, uv)
         grid_vals = np.tile(line[:, None], (1, azim_lin.size))
 else:
+    # Step 1: First pass with linear interpolation
     try:
-        from scipy.interpolate import RBFInterpolator
-        rbf = RBFInterpolator(points, vals_filt, kernel="thin_plate_spline", smoothing=1e-10)
-        grid_vals = rbf(query).reshape(AZIM.shape)
+        grid_vals = griddata(points, vals_filt, (AZIM, ELEV), method='linear')
     except Exception:
-        # Fallback path: linear + nearest fill.
-        try:
-            grid_vals = griddata(points, vals_filt, (AZIM, ELEV), method='linear')
-        except Exception:
-            grid_vals = np.full_like(AZIM, np.nan, dtype=np.float64)
-        if np.any(~np.isfinite(grid_vals)):
-            try:
-                grid_nn = griddata(points, vals_filt, (AZIM, ELEV), method='nearest')
-                grid_vals = np.where(np.isfinite(grid_vals), grid_vals, grid_nn)
-            except Exception:
-                # last resort: fill with median value
-                med = float(np.nanmedian(vals_filt))
-                grid_vals = np.where(np.isfinite(grid_vals), grid_vals, med)
+        grid_vals = np.full_like(AZIM, np.nan, dtype=np.float64)
+    
+    # Step 2: Fill missing values using iterative averaging of neighbors
+    if np.any(~np.isfinite(grid_vals)):
+        from scipy.ndimage import generic_filter
+        
+        def neighbor_mean(values):
+            """Compute mean of finite neighbors"""
+            finite = values[np.isfinite(values)]
+            return np.mean(finite) if finite.size > 0 else np.nan
+        
+        # Iteratively fill NaN values by averaging neighbors
+        max_iterations = 50
+        for iteration in range(max_iterations):
+            nan_mask = ~np.isfinite(grid_vals)
+            if not np.any(nan_mask):
+                break
+            
+            # Apply neighbor averaging using 3x3 kernel
+            filled = generic_filter(grid_vals, neighbor_mean, size=3, mode='nearest')
+            # Only update NaN positions
+            grid_vals = np.where(nan_mask, filled, grid_vals)
+        
+        print(f"[info] Filled missing values using neighbor averaging ({iteration+1} iterations)")
+    
+    # Step 3: Apply bilinear smoothing to get smooth rendering
+    # The filled grid is now complete, use bilinear for smooth display
+    print(f"[info] Using bilinear interpolation (grid is complete, matplotlib will render smoothly)")
 
 
 # Compute automatic color scales for each plot independently
@@ -217,14 +231,34 @@ if not np.isfinite(interp_vmin) or not np.isfinite(interp_vmax) or interp_vmax <
     interp_vmin, interp_vmax = 0.0, 1.0
 
 # Log plot data (base-10) from interpolated grid
+# Add offset to handle negative values from RBF interpolation
+finite_grid_vals = grid_vals[np.isfinite(grid_vals)]
+if finite_grid_vals.size > 0:
+    grid_min = float(np.min(finite_grid_vals))
+    # If minimum is negative or very close to zero, add offset
+    if grid_min <= 0:
+        offset = abs(grid_min) + max(abs(grid_min) * 0.1, 1e-10)
+    else:
+        offset = 0.0
+else:
+    offset = 0.0
+
+# Apply offset and compute log
+grid_vals_offset = grid_vals + offset
 eps = max(interp_vmax * 1e-12, 1e-20)
-log_grid_vals = np.log10(np.clip(grid_vals, eps, None))
+log_grid_vals = np.log10(np.clip(grid_vals_offset, eps, None))
 finite_log = np.isfinite(log_grid_vals)
 if np.any(finite_log):
     log_vmin = float(np.nanmin(log_grid_vals[finite_log]))
     log_vmax = float(np.nanmax(log_grid_vals[finite_log]))
 else:
     log_vmin, log_vmax = -12.0, 0.0
+
+# Print offset info for debugging
+if offset > 0:
+    print(f"[info] Added offset of {offset:.6e} to avoid log(negative) values")
+    print(f"[info] Original range: [{grid_min:.6e}, {interp_vmax:.6e}]")
+    print(f"[info] Offset range: [{grid_min + offset:.6e}, {interp_vmax + offset:.6e}]")
 # Plot
 fig, axs = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
 
