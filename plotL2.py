@@ -109,7 +109,7 @@ if vals.size == 0:
     )
 
 # Remove upper outliers (e.g. > 95th percentile)
-q95 = np.percentile(vals, 95)
+q95 = np.percentile(vals, 100)
 valid = vals <= q95
 elev_filt = elev[valid]
 azim_filt = azim[valid]
@@ -260,18 +260,32 @@ if offset > 0:
     print(f"[info] Original range: [{grid_min:.6e}, {interp_vmax:.6e}]")
     print(f"[info] Offset range: [{grid_min + offset:.6e}, {interp_vmax + offset:.6e}]")
 # Plot
-fig, axs = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
+fig, axs = plt.subplots(1, 4, figsize=(24, 5), sharey=False)
 
-# Compute common axis limits based on actual scalar range
-def representative_ticks(values: np.ndarray, max_ticks: int) -> np.ndarray:
-    uniq = np.unique(np.round(values.astype(np.float64), 8))
-    if uniq.size <= max_ticks:
-        return uniq
-    idx = np.linspace(0, uniq.size - 1, max_ticks).astype(int)
-    return uniq[idx]
+# Compute symmetric, evenly-spaced tick positions
+def nice_ticks(vmin: float, vmax: float, max_ticks: int) -> np.ndarray:
+    """Generate nice evenly-spaced tick positions"""
+    data_range = vmax - vmin
+    if data_range < 1e-10:
+        return np.array([vmin])
+    
+    # Calculate nice spacing
+    rough_spacing = data_range / (max_ticks - 1)
+    magnitude = 10 ** np.floor(np.log10(rough_spacing))
+    
+    # Try nice factors: 1, 2, 5, 10
+    for factor in [1, 2, 5, 10]:
+        spacing = magnitude * factor
+        if data_range / spacing <= max_ticks - 1:
+            break
+    
+    # Generate ticks
+    start = np.ceil(vmin / spacing) * spacing
+    end = np.floor(vmax / spacing) * spacing
+    return np.arange(start, end + spacing/2, spacing)
 
-xticks = representative_ticks(azim_filt, max_ticks=9)
-yticks = representative_ticks(elev_filt, max_ticks=7)
+xticks = nice_ticks(x_min, x_max, max_ticks=9)
+yticks = nice_ticks(y_min, y_max, max_ticks=7)
 
 # 1. Raw scatter (uses its own automatic range)
 sc = axs[0].scatter(azim_filt, elev_filt, c=vals_filt, cmap='viridis', s=50, 
@@ -295,12 +309,35 @@ im1 = axs[1].imshow(
 )
 axs[1].set_title('Interpolated')
 axs[1].set_xlabel('Azimuth (°)')
+axs[1].set_ylabel('Elevation (°)')
 axs[1].set_xlim(x_min, x_max)
 axs[1].set_ylim(y_min, y_max)
 axs[1].grid(True)
 
-# 3. Log Interpolated
-im2 = axs[2].imshow(
+# 3. Scatter with log scale colors
+# Compute log values for scatter data
+if scatter_vmin > 0:
+    scatter_log_vals = np.log10(vals_filt)
+    scatter_log_vmin = np.log10(scatter_vmin)
+    scatter_log_vmax = np.log10(scatter_vmax)
+else:
+    # Handle negative/zero values with offset
+    scatter_offset = abs(scatter_vmin) + max(abs(scatter_vmin) * 0.1, 1e-10) if scatter_vmin <= 0 else 0.0
+    scatter_log_vals = np.log10(vals_filt + scatter_offset)
+    scatter_log_vmin = np.log10(scatter_vmin + scatter_offset)
+    scatter_log_vmax = np.log10(scatter_vmax + scatter_offset)
+
+sc_log = axs[2].scatter(azim_filt, elev_filt, c=scatter_log_vals, cmap='viridis', s=50,
+                        vmin=scatter_log_vmin, vmax=scatter_log_vmax)
+axs[2].set_title('Scatter (log10)')
+axs[2].set_xlabel('Azimuth (°)')
+axs[2].set_ylabel('Elevation (°)')
+axs[2].set_xlim(x_min, x_max)
+axs[2].set_ylim(y_min, y_max)
+axs[2].grid(True)
+
+# 4. Log Interpolated
+im2 = axs[3].imshow(
     log_grid_vals,
 #    extent=(0, 90, min(elev), max(elev)),
     extent=(x_min, x_max, y_min, y_max),
@@ -309,16 +346,19 @@ im2 = axs[2].imshow(
     cmap='viridis'
     ,vmin=log_vmin, vmax=log_vmax
 )
-axs[2].set_title('Interpolated (log10)')
-axs[2].set_xlabel('Azimuth (°)')
-axs[2].set_xlim(x_min, x_max)
-axs[2].set_ylim(y_min, y_max)
-axs[2].grid(True)
+axs[3].set_title('Interpolated (log10)')
+axs[3].set_xlabel('Azimuth (°)')
+axs[3].set_ylabel('Elevation (°)')
+axs[3].set_xlim(x_min, x_max)
+axs[3].set_ylim(y_min, y_max)
+axs[3].grid(True)
 
-# Force identical tick positions on all panels.
+# Force identical tick positions on all panels with labels
 for ax in axs:
     ax.set_xticks(xticks)
     ax.set_yticks(yticks)
+    ax.set_xticklabels([f'{x:.0f}' for x in xticks])
+    ax.set_yticklabels([f'{y:.0f}' for y in yticks])
 
 # Colorbar for panel 1 (scatter)
 divider0 = make_axes_locatable(axs[0])
@@ -330,9 +370,14 @@ divider1 = make_axes_locatable(axs[1])
 cax1 = divider1.append_axes("right", size="4%", pad=0.06)
 fig.colorbar(im1, cax=cax1, label='L2 Value')
 
-# Colorbar for panel 3 (log interpolated)
+# Colorbar for panel 3 (scatter log)
 divider2 = make_axes_locatable(axs[2])
 cax2 = divider2.append_axes("right", size="4%", pad=0.06)
-fig.colorbar(im2, cax=cax2, label='log10(L2 Value)')
+fig.colorbar(sc_log, cax=cax2, label='log10(L2 Value)')
+
+# Colorbar for panel 4 (log interpolated)
+divider3 = make_axes_locatable(axs[3])
+cax3 = divider3.append_axes("right", size="4%", pad=0.06)
+fig.colorbar(im2, cax=cax3, label='log10(L2 Value)')
 plt.tight_layout()
 plt.show()
