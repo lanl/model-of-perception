@@ -3,6 +3,7 @@ from scipy.ndimage import gaussian_filter
 from skimage import color
 from sklearn.cluster import KMeans
 from matplotlib import pyplot as plt
+from matplotlib.patches import Rectangle
 
 
 def fillLinear(f_original, iso_val):
@@ -35,7 +36,80 @@ def fillLinear(f_original, iso_val):
     return new_data
 
 
-def get_scalar_from_rgb(rgb_array, scalarRange, cmap_name="rainbow", num_samples=21):
+def _lch_to_rgb01(lch_array):
+    lab = color.lch2lab(np.asarray(lch_array, dtype=np.float64).reshape(1, -1, 3)).reshape(-1, 3)
+    rgb = color.lab2rgb(lab.reshape(1, -1, 3)).reshape(-1, 3)
+    return np.clip(rgb, 0.0, 1.0)
+
+
+def _plot_cluster_patches(ax, centers, avg_lab, chosen_rgb, cmap_rgbs):
+    center_rgbs = _lch_to_rgb01(centers)
+    avg_rgb = _lch_to_rgb01(avg_lab.reshape(1, 3))[0]
+    patch_rgbs = [
+        avg_rgb,
+        center_rgbs[0],
+        center_rgbs[1],
+        np.clip(chosen_rgb, 0.0, 1.0),
+    ]
+    patch_labels = [
+        "average of all patches",
+        "cluster center 0",
+        "cluster center 1",
+        "closest colormap color",
+    ]
+    for i, (rgb, label) in enumerate(zip(patch_rgbs, patch_labels)):
+        x = i * 1.15
+        ax.add_patch(Rectangle((x, 0.0), 1.0, 1.0, facecolor=rgb, edgecolor="black"))
+        ax.text(x + 0.5, 1.08, label, ha="center", va="bottom", fontsize=9)
+
+    for i, rgb in enumerate(cmap_rgbs):
+        ax.add_patch(Rectangle((0.02 + i * 0.12, 1.55), 0.12, 0.28, facecolor=rgb, edgecolor="none"))
+    ax.text(0.5 * (len(cmap_rgbs) * 0.12), 1.9, "sampled colormap", ha="center", va="bottom", fontsize=9)
+
+    ax.set_xlim(-0.05, max(4.7, len(cmap_rgbs) * 0.12 + 0.1))
+    ax.set_ylim(0, 2.05)
+    ax.set_title("Representative colors")
+    ax.set_yticks([])
+    ax.set_xticks([])
+
+
+def _plot_scalar_debug(rgb_array, labels, centers, avg_lab, sample_scalars, sample_lab, best_idx, sample_rgbs):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    _plot_cluster_patches(
+        axes[0],
+        centers,
+        avg_lab,
+        sample_rgbs[best_idx],
+        sample_rgbs,
+    )
+
+    axes[1].plot(sample_scalars, sample_lab[:, 2], label="colormap hue", color="steelblue")
+    axes[1].axhline(avg_lab[2], color="darkorange", linestyle="--", label="reference hue")
+    axes[1].scatter(
+        sample_scalars[best_idx],
+        sample_lab[best_idx, 2],
+        color="crimson",
+        label="chosen scalar",
+        zorder=3,
+    )
+    axes[1].set_title("Hue Match in LCH")
+    axes[1].set_xlabel("scalar")
+    axes[1].set_ylabel("hue")
+    axes[1].legend()
+
+    plt.tight_layout()
+    plt.show()
+
+
+def get_scalar_from_rgb(
+    rgb_array,
+    scalarRange,
+    cmap_name="rainbow",
+    num_samples=21,
+    plot_debug=False,
+    use_clusters=False,
+):
     """
     Convert an array of RGB colors (values in [0,1]) to CIELAB.
     For colors with chromaticity (a, b) magnitude greater than threshold,
@@ -85,8 +159,12 @@ def get_scalar_from_rgb(rgb_array, scalarRange, cmap_name="rainbow", num_samples
     labels = kmeans.fit_predict(lab)
     centers = kmeans.cluster_centers_
 
-    # Return the cluster center with higher brightness (less like black)
-    avg_lab = centers[np.argmax(centers[:, 0])]
+    # Default behavior: use the average over all samples.
+    # Optional cluster mode: use the brighter cluster center.
+    if use_clusters:
+        avg_lab = centers[np.argmax(centers[:, 0])]
+    else:
+        avg_lab = np.mean(lab, axis=0)
 
     # Sample the colormap.
     cmap = plt.get_cmap(cmap_name)
@@ -103,5 +181,17 @@ def get_scalar_from_rgb(rgb_array, scalarRange, cmap_name="rainbow", num_samples
     dists = abs(sample_lab[:, 2] - avg_lab[2])
     best_idx = np.argmin(dists)
     best_scalar = sample_scalars[best_idx]
+
+    if plot_debug:
+        _plot_scalar_debug(
+            rgb_array,
+            labels,
+            centers,
+            avg_lab,
+            sample_scalars,
+            sample_lab,
+            best_idx,
+            sample_rgbs,
+        )
 
     return best_scalar * (scalarRange[1] - scalarRange[0]) + scalarRange[0]

@@ -319,6 +319,23 @@ def write_vtp(poly: vtk.vtkPolyData, out_path: str) -> None:
         raise RuntimeError(f"Failed to write {out_path}")
 
 
+def print_point_rgb_summary(rgba: np.ndarray) -> None:
+
+    rgb = np.asarray(rgba[:, :3], dtype=np.float64)
+
+    print("=== Point RGB values ===")
+
+    for idx, color in enumerate(rgb.astype(np.uint8)):
+
+        print(f"point {idx}: ({color[0]}, {color[1]}, {color[2]})")
+
+    mean_rgb = rgb.mean(axis=0)
+
+    print("\n=== Average RGB ===")
+
+    print(f"({mean_rgb[0]:.6f}, {mean_rgb[1]:.6f}, {mean_rgb[2]:.6f})")
+
+
 def show_polydata(poly: vtk.vtkPolyData, title: str) -> None:
 
     try:
@@ -385,6 +402,8 @@ def main():
     im = extract_basecolor_png_from_glb(in_path)
 
     rgba = bake_uv_to_rgba(uv, im)
+
+    print_point_rgb_summary(rgba)
 
     poly = to_vtk_polydata(mesh, rgba)
 

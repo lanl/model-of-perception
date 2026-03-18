@@ -14,6 +14,15 @@ import argparse
 import os
 import sys
 
+import numpy as np
+
+from convertGlb2Vtk import (
+    bake_uv_to_rgba,
+    extract_basecolor_png_from_glb,
+    get_uv,
+    load_first_mesh,
+)
+
 
 def _parse_bg(bg: str) -> tuple[float, float, float]:
     try:
@@ -23,6 +32,22 @@ def _parse_bg(bg: str) -> tuple[float, float, float]:
     if len(values) != 3:
         raise RuntimeError("--bg must contain three comma-separated floats")
     return values
+
+
+def _print_point_rgb_summary(glb_path: str) -> None:
+    mesh = load_first_mesh(glb_path)
+    uv = get_uv(mesh)
+    image = extract_basecolor_png_from_glb(glb_path)
+    rgba = bake_uv_to_rgba(uv, image)
+    rgb = rgba[:, :3].astype(np.float64)
+
+    print("=== Point RGB values ===")
+    for idx, color in enumerate(rgb.astype(np.uint8)):
+        print(f"point {idx}: ({color[0]}, {color[1]}, {color[2]})")
+
+    mean_rgb = rgb.mean(axis=0)
+    print("\n=== Average RGB ===")
+    print(f"({mean_rgb[0]:.6f}, {mean_rgb[1]:.6f}, {mean_rgb[2]:.6f})")
 
 
 def main():
@@ -51,6 +76,7 @@ def main():
         raise RuntimeError(f"File not found: {glb_path}")
 
     bg = _parse_bg(args.bg)
+    _print_point_rgb_summary(glb_path)
 
     render_window = vtkRenderWindow()
     render_window.SetSize(1280, 900)

@@ -1,11 +1,22 @@
-import numpy as np
-from isosurface_to_volume import get_scalar_from_rgb
-import vtk
-import pyvista as pv
+import argparse
 from pathlib import Path
 
+import numpy as np
+import pyvista as pv
+import vtk
 
-def eval2(recon_surface, orig_volume=None, orig_surface=None, cmap_name="rainbow"):
+from isosurface_to_volume import get_scalar_from_rgb
+
+
+def eval2(
+    recon_surface,
+    orig_volume=None,
+    orig_surface=None,
+    cmap_name="rainbow",
+    plot_scalar_debug=False,
+    use_clusters=False,
+    out_path=None,
+):
     array_of_rgb = recon_surface["RGBA"][:, :3]
     scalar_range = orig_volume.get_data_range()
 
@@ -14,7 +25,8 @@ def eval2(recon_surface, orig_volume=None, orig_surface=None, cmap_name="rainbow
         scalar_range,
         cmap_name=cmap_name,
         num_samples=256,
-        # threshold=5,
+        plot_debug=plot_scalar_debug,
+        use_clusters=use_clusters,
     )
 
     # Create an implicit distance function from the surface.
@@ -64,7 +76,11 @@ def eval2(recon_surface, orig_volume=None, orig_surface=None, cmap_name="rainbow
     )
     # recon_volume["recons_scalar_sd"] = new_data.flatten()
     orig_volume["recon_scalar_sd"] = new_data.flatten()
-    orig_volume.save("fully_reconstructed.vti")
+    if out_path is None:
+        raise RuntimeError("out_path is required")
+    out_path = Path(out_path).resolve()
+    orig_volume.save(str(out_path))
+    print("saved reconstructed volume:", out_path)
 
     # Calculate distance of two surfaces.
     from scipy.spatial import cKDTree
@@ -83,45 +99,33 @@ def eval2(recon_surface, orig_volume=None, orig_surface=None, cmap_name="rainbow
 
 
 if __name__ == "__main__":
-    asteroid = pv.read("../TheTruthPaper/imdb/inputs/asteroid_scaled.vti")
-    asteroid.set_active_scalars("tev")
-    isovalues = [
-        "0.08200450018048287",
-        # "0.2086136944591999",
-        # "0.33522288873791695",
-        # "0.461832083016634",
-        # "0.588441277295351",
-    ]
-    colormaps = ["rainbow"]  # ["coolwarm", "Spectral", "viridis"]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--orig-volume", required=True, help="Path to original volume .vti")
+    parser.add_argument("--orig-surface", required=True, help="Path to original surface .vtp")
+    parser.add_argument("--recon-surface", required=True, help="Path to reconstructed/aligned surface .vtp")
+    parser.add_argument("--scalar-name", default="tev", help="Active scalar name to use from the original volume")
+    parser.add_argument("--cmap-name", default="rainbow", help="Colormap name used to decode RGB values")
+    parser.add_argument("--plot-scalar-debug", action="store_true", help="Show debug plots for get_scalar_from_rgb")
+    parser.add_argument("--use-clusters", action="store_true", help="Use cluster centers instead of the overall average color")
+    args = parser.parse_args()
 
-    for colormap in colormaps:
-        for isovalue in isovalues:
-            # print("Procing colormap: ", colormap)
-            contour = pv.read(
-                "/home/ollie/PycharmProjects/TheTruthPaper/imdb/outputs/asteroid_isosurface/tev_iso_"
-                + isovalue
-                + ".vtp"
-            )
+    orig_volume_path = Path(args.orig_volume).resolve()
+    orig_surface_path = Path(args.orig_surface).resolve()
+    recon_surface_path = Path(args.recon_surface).resolve()
 
-            dir_path = Path(
-                "/home/ollie/PycharmProjects/TheTruthTrellis/outputs/asteroid/"
-                + colormap
-                + "/aligned/"
-            )
-            for vtp_path in dir_path.glob(
-                "tev_iso_" + isovalue + "_AZ_180_EL_45.0_aligned.vtp"
-            ):
-                print(colormap, vtp_path.stem)
-                recon_surface = pv.read(vtp_path)
-                (
-                    chamfer,
-                    hausdorff,
-                    L2_diff1,
-                    L2_diff2,
-                    L2_diff,
-                ) = eval2(
-                    recon_surface=recon_surface,
-                    orig_volume=asteroid,
-                    orig_surface=contour,
-                    cmap_name=colormap,
-                )
+    orig_volume = pv.read(orig_volume_path)
+    orig_volume.set_active_scalars(args.scalar_name)
+    orig_surface = pv.read(orig_surface_path)
+    recon_surface = pv.read(recon_surface_path)
+    out_path = recon_surface_path.with_name(f"{recon_surface_path.stem}_reconstructed.vti")
+
+    print(args.cmap_name, recon_surface_path.stem)
+    eval2(
+        recon_surface=recon_surface,
+        orig_volume=orig_volume,
+        orig_surface=orig_surface,
+        cmap_name=args.cmap_name,
+        plot_scalar_debug=args.plot_scalar_debug,
+        use_clusters=args.use_clusters,
+        out_path=out_path,
+    )
