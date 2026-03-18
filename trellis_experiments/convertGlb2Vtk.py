@@ -319,6 +319,31 @@ def write_vtp(poly: vtk.vtkPolyData, out_path: str) -> None:
         raise RuntimeError(f"Failed to write {out_path}")
 
 
+def show_polydata(poly: vtk.vtkPolyData, title: str) -> None:
+
+    try:
+
+        import pyvista as pv  # type: ignore
+
+    except ImportError as e:
+
+        raise RuntimeError(
+            "pyvista is required for --show. Install with: pip install pyvista"
+        ) from e
+
+    mesh = pv.wrap(poly)
+
+    pl = pv.Plotter(window_size=(1200, 900))
+
+    pl.add_text(title, font_size=12)
+
+    pl.add_mesh(mesh, scalars="RGBA", rgba=True)
+
+    pl.show_grid()
+
+    pl.show()
+
+
 def default_out_path(in_path: str) -> str:
 
     d = os.path.dirname(in_path)
@@ -338,6 +363,11 @@ def main():
         "--out",
         default=None,
         help="Output .vtp (default: <input>_color.vtp next to input)",
+    )
+    ap.add_argument(
+        "--show",
+        action="store_true",
+        help="Display the baked colored mesh after conversion",
     )
 
     args = ap.parse_args()
@@ -361,6 +391,10 @@ def main():
     write_vtp(poly, out_path)
 
     print(f"Wrote: {out_path}")
+
+    if args.show:
+
+        show_polydata(poly, os.path.basename(in_path))
 
 
 if __name__ == "__main__":
