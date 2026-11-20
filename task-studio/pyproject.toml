@@ -1,0 +1,16 @@
+[project]
+name = "scalar-task-studio"
+version = "0.1.0"
+requires-python = ">=3.10.0"
+dependencies = [
+    "flask>=3.1,<4",
+    "gunicorn>=23,<26",
+    "matplotlib>=3.10.9",
+    "numpy>=2.2.6",
+    "pillow>=12.3.0",
+]
+
+[project.optional-dependencies]
+datasets = [
+    "h5py>=3.11,<4",
+]

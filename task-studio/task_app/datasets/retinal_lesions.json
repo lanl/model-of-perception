@@ -1,0 +1,32 @@
+{
+  "id": "retinal_lesions",
+  "name": "Retinal lesions · green-channel intensity",
+  "file": "retinal_lesions.npy",
+  "extent": [
+    0.0,
+    1.0
+  ],
+  "file_sha256": "ecbf7aaa89b2ca4a8d6bceb71f52bc26353c0bc4af65b840841802edb62e2429",
+  "provenance": {
+    "source_url": "https://raw.githubusercontent.com/scikit-image/scikit-image/v0.19.3/skimage/data/microaneurysms.png",
+    "source_sha256": "a1e1be59aa447f8ce082f7fa809997ab369a2b137cb6c4202abc647c7ccf6456",
+    "field": "published green-channel intensity (0–255), not a calibrated clinical quantity",
+    "orientation": "source top row flipped to highest y",
+    "scalar_units": "stored image intensity",
+    "download_payload_bytes": 4950,
+    "source_page": "https://scikit-image.org/docs/0.25.x/api/skimage.data.html#skimage.data.microaneurysms",
+    "citation": "Budai et al. (2013), doi:10.1155/2013/154860. Published HRF image 07_dr.JPG crop, green channel; CC0 from Andreas Maier.",
+    "license": "CC0",
+    "source_shape": [
+      102,
+      102
+    ],
+    "source_scalar_sha256": "860474ff573e04a5dcff29f2c11487b903ba2e236bdfa0953345bb536fed3497",
+    "prepared_shape": [
+      100,
+      100
+    ],
+    "resampling": "area-weighted cell averaging before color mapping; no value normalization",
+    "axes": "normalized raster coordinates [0,1] on each axis; physical coordinates retained only in provenance"
+  }
+}

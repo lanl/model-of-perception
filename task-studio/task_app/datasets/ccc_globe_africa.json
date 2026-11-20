@@ -1,0 +1,70 @@
+{
+  "id": "ccc_globe_africa",
+  "name": "CCC globe (Africa) · screenshot intensity",
+  "file": "ccc_globe_africa.npy",
+  "extent": [
+    0.0,
+    1.0
+  ],
+  "file_sha256": "16b39c8a8617d276c20ee8f8c0ce51c2d0dd4acc13903729c3a12581fd726838",
+  "provenance": {
+    "source_page": "https://ccctool.com/",
+    "citation": "Nardini et al., A Testing Environment for Continuous Colormaps, IEEE TVCG 27(2), 1043–1053 (2021; online 2020), doi:10.1109/TVCG.2020.3028955.",
+    "reference_scope": "CCC test-suite reference; does not identify the original source of this screenshot.",
+    "source_file": "code/data/ccc/Screenshot 2026-11-06 at 3.05.32 PM.png",
+    "source_sha256": "ccbb7639974ad54ce9c239bd59ddfefc84fc1359cf6af26d0e372de6ead7a16e",
+    "source_shape": [
+      862,
+      874
+    ],
+    "prepared_shape": [
+      100,
+      100
+    ],
+    "field": "arithmetic mean of the three stored near-gray RGB code values; no gamma decoding",
+    "scalar_units": "screenshot intensity (0–255), not original physical values",
+    "acquisition": "User-supplied screenshot of CCC-Tool, 2026-11-06",
+    "original_dataset": "Not identified from the supplied screenshot; retain CCC-Tool as immediate source.",
+    "license": "Original image/data reuse terms not established from the supplied screenshot.",
+    "background_repairs_xyxy": [
+      [
+        0,
+        0,
+        25,
+        25
+      ],
+      [
+        849,
+        0,
+        874,
+        25
+      ],
+      [
+        0,
+        837,
+        25,
+        862
+      ],
+      [
+        849,
+        837,
+        874,
+        862
+      ]
+    ],
+    "background_repair_reason": "Remove white screenshot corner marks in the black globe background.",
+    "padding_top_bottom_left_right": [
+      6,
+      6,
+      0,
+      0
+    ],
+    "padding_value": 0,
+    "padding_reason": "Square app grids; retain image proportions and all image content.",
+    "resampling": "Area-weighted cell averaging to 100 × 100 after square padding; no value normalization.",
+    "orientation": "Source top row flipped to highest y.",
+    "axes": "Normalized screen coordinates [0,1] on each axis; not geographic or physical coordinates.",
+    "background_policy": "Black background and padding are ordinary zero-valued cells; no scientific-domain mask.",
+    "interpretation": "Tasks concern the prepared screenshot intensity, including rendering and quantization effects. Globe views are not asserted to be independent simulation datasets."
+  }
+}
