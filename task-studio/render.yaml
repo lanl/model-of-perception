@@ -3,6 +3,7 @@ services:
     name: scalar-task-studio
     runtime: python
     plan: free
+    rootDir: task-studio
     buildCommand: uv sync --locked --no-dev
     startCommand: bash start.sh
     healthCheckPath: /healthz
