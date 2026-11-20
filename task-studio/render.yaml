@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: scalar-task-studio
+    runtime: python
+    plan: free
+    buildCommand: uv sync --locked --no-dev
+    startCommand: bash start.sh
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.12
+      - key: UV_VERSION
+        value: 0.10.11
+      - key: SECRET_KEY
+        generateValue: true
+      - key: OUTPUT_DIR
+        value: /tmp/scalar-task-studio-runs
+      - key: MPLCONFIGDIR
+        value: /tmp/scalar-task-studio-matplotlib
+      - key: MAX_TASKS
+        value: "50"
+      - key: SESSION_TTL_SECONDS
+        value: "3600"
+      - key: JOB_TTL_SECONDS
+        value: "3600"
+      - key: MAX_JOB_SECONDS
+        value: "300"

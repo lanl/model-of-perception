@@ -1,0 +1,19 @@
+{
+  "prepared": [
+    "mitosis",
+    "retinal_lesions",
+    "gray_scott",
+    "active_matter",
+    "euler_shocks",
+    "acoustic_waves"
+  ],
+  "failures": [
+    {
+      "id": "viscoelastic_flow",
+      "error": "HTTP Error 401: Unauthorized"
+    }
+  ],
+  "downloaded_payload_bytes": 2577469,
+  "payload_limit_bytes": 67108864,
+  "max_side": 100
+}

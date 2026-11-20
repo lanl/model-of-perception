@@ -1,0 +1,45 @@
+{
+  "id": "ccc_mammogram",
+  "name": "CCC mammogram · screenshot intensity",
+  "file": "ccc_mammogram.npy",
+  "extent": [
+    0.0,
+    1.0
+  ],
+  "file_sha256": "144d2e417ac4a5fb22b312907ca07b3a4189d3fb80a18d660bf892ccfe0327c4",
+  "provenance": {
+    "source_page": "https://ccctool.com/",
+    "citation": "Nardini et al., A Testing Environment for Continuous Colormaps, IEEE TVCG 27(2), 1043–1053 (2021; online 2020), doi:10.1109/TVCG.2020.3028955.",
+    "reference_scope": "CCC test-suite reference; does not identify the original source of this screenshot.",
+    "source_file": "code/data/ccc/Screenshot 2026-11-06 at 3.06.01 PM.png",
+    "source_sha256": "22bf9d42be8410ab9aa0874fa27a6ef1496ad6e132c5304a77b45475aece5227",
+    "source_shape": [
+      861,
+      482
+    ],
+    "prepared_shape": [
+      100,
+      100
+    ],
+    "field": "arithmetic mean of the three stored near-gray RGB code values; no gamma decoding",
+    "scalar_units": "screenshot intensity (0–255), not original physical values",
+    "acquisition": "User-supplied screenshot of CCC-Tool, 2026-11-06",
+    "original_dataset": "Not identified from the supplied screenshot; retain CCC-Tool as immediate source.",
+    "license": "Original image/data reuse terms not established from the supplied screenshot.",
+    "background_repairs_xyxy": [],
+    "background_repair_reason": "None.",
+    "padding_top_bottom_left_right": [
+      0,
+      0,
+      189,
+      190
+    ],
+    "padding_value": 0,
+    "padding_reason": "Square app grids; retain image proportions and all image content.",
+    "resampling": "Area-weighted cell averaging to 100 × 100 after square padding; no value normalization.",
+    "orientation": "Source top row flipped to highest y.",
+    "axes": "Normalized screen coordinates [0,1] on each axis; not geographic or physical coordinates.",
+    "background_policy": "Black background and padding are ordinary zero-valued cells; no scientific-domain mask.",
+    "interpretation": "Tasks concern the prepared screenshot intensity, including rendering and quantization effects. Globe views are not asserted to be independent simulation datasets."
+  }
+}

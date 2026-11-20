@@ -1,0 +1,32 @@
+{
+  "id": "mitosis",
+  "name": "Human cell nuclei · fluorescence intensity",
+  "file": "mitosis.npy",
+  "extent": [
+    0.0,
+    1.0
+  ],
+  "file_sha256": "7d33fc10f55a8872597cc10fd1e2ace5a87a0859793f5173b898a5d7cc15a89c",
+  "provenance": {
+    "source_url": "https://gitlab.com/scikit-image/data/-/raw/2cdc5ce89b334d28f06a58c9f0ca21aa6992a5ba/AS_09125_050116030001_D03f00d0.tif",
+    "source_sha256": "2751ba667c4067c5d30817cff004aa06f6f6287f1cdbb5b8c9c6a500308cb456",
+    "field": "recorded grayscale intensity (0–255), not calibrated concentration",
+    "orientation": "source top row flipped to highest y",
+    "scalar_units": "stored image intensity",
+    "download_payload_bytes": 233336,
+    "source_page": "https://scikit-image.org/docs/0.25.x/api/skimage.data.html#skimage.data.human_mitosis",
+    "citation": "Moffat et al. (2006), doi:10.1016/j.cell.2006.01.040; image copyright David Root, CC0.",
+    "license": "CC0",
+    "source_shape": [
+      512,
+      512
+    ],
+    "source_scalar_sha256": "b2746e53dbbb4bb3bf0b093424d0859e5a3de2507ab497fe3a2d1aa6b759e2a2",
+    "prepared_shape": [
+      100,
+      100
+    ],
+    "resampling": "area-weighted cell averaging before color mapping; no value normalization",
+    "axes": "normalized raster coordinates [0,1] on each axis; physical coordinates retained only in provenance"
+  }
+}
